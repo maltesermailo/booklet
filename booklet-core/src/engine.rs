@@ -5,17 +5,37 @@
 //! each folder node; the engine only collects it into a flat path list when
 //! saving. The qtbridge app drives an `Engine` and serializes its rows for QML.
 
-use crate::config::{self, Config};
+use crate::config::{self, Config, VaultEntry};
 use crate::document;
-use crate::vault::{self, BookInfo, Folder, Node, NoteInfo, Row, Vault, VaultInfo};
+use crate::search::{self, Hit};
+use crate::vault::{self, BookInfo, Folder, Node, NoteInfo, Row, Vault, VaultInfo, BINDING_PALETTE};
 use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Reading size for the editor, in pixels, and the range the UI may set.
 pub const DEFAULT_FONT_SIZE: u32 = 18;
 pub const MIN_FONT_SIZE: u32 = 11;
 pub const MAX_FONT_SIZE: u32 = 40;
+
+/// How large the chrome draws and how much room it gives itself, as whole
+/// percentages of the designed size. The reference is 100; the range is what
+/// still lays out, checked by eye at both ends.
+pub const DEFAULT_UI_SCALE: u32 = 100;
+pub const MIN_UI_SCALE: u32 = 80;
+pub const MAX_UI_SCALE: u32 = 160;
+pub const DEFAULT_DENSITY: u32 = 100;
+pub const MIN_DENSITY: u32 = 80;
+pub const MAX_DENSITY: u32 = 150;
+
+/// How many vaults the picker lists. Past this it is a filing cabinet, not a
+/// list of where you were.
+pub const MAX_RECENT_VAULTS: usize = 8;
+
+/// The theme the app wears until told otherwise. The UI knows the names; the
+/// engine only carries this one across restarts.
+pub const DEFAULT_THEME: &str = "night";
 
 pub struct Engine {
     config_path: PathBuf,
@@ -24,6 +44,9 @@ pub struct Engine {
     /// so their open folders survive a switch, but they are never rendered.
     active: Option<PathBuf>,
     editor_font_size: u32,
+    theme: String,
+    ui_scale: u32,
+    density: u32,
 }
 
 impl Engine {
@@ -35,6 +58,9 @@ impl Engine {
             vaults: Vec::new(),
             active: None,
             editor_font_size: DEFAULT_FONT_SIZE,
+            theme: DEFAULT_THEME.into(),
+            ui_scale: DEFAULT_UI_SCALE,
+            density: DEFAULT_DENSITY,
         }
     }
 
@@ -46,22 +72,49 @@ impl Engine {
             .editor_font_size
             .map(|size| size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
             .unwrap_or(DEFAULT_FONT_SIZE);
+        self.theme = config.theme.unwrap_or_else(|| DEFAULT_THEME.into());
+        self.ui_scale = config
+            .ui_scale
+            .map(|scale| scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE))
+            .unwrap_or(DEFAULT_UI_SCALE);
+        self.density = config
+            .density
+            .map(|density| density.clamp(MIN_DENSITY, MAX_DENSITY))
+            .unwrap_or(DEFAULT_DENSITY);
 
         // Fall back to the first vault if the stored active one is gone.
         self.active = config
             .active
-            .filter(|path| config.vaults.contains(path))
-            .or_else(|| config.vaults.first().cloned());
+            .filter(|path| config.vaults.iter().any(|entry| entry.path == *path))
+            .or_else(|| config.vaults.first().map(|entry| entry.path.clone()));
 
         let active = self.active.clone();
         self.vaults = config
             .vaults
             .into_iter()
-            .map(|path| {
-                let is_active = active.as_deref() == Some(path.as_path());
-                build_vault(path, &expanded, is_active)
+            .map(|entry| {
+                let is_active = active.as_deref() == Some(entry.path.as_path());
+                let mut vault = build_vault(entry.path, &expanded, is_active);
+                vault.set_color(entry.color);
+                vault.set_last_opened(entry.last_opened);
+                vault
             })
             .collect();
+
+        // A config written before the picker has no colours; give them one now
+        // rather than leaving the dots blank.
+        self.color_unpainted_vaults();
+
+        // Starting up reopens the vault you were last in, and that is an open:
+        // without this the picker would say "never opened" about the very vault
+        // on screen. Not persisted here — the next thing that saves carries it,
+        // and load() reporting a *write* error would be a lie about what failed.
+        let now = now_millis();
+        if let Some(active) = self.active.clone() {
+            if let Some(vault) = self.vaults.iter_mut().find(|vault| vault.path() == active) {
+                vault.set_last_opened(now);
+            }
+        }
 
         Ok(())
     }
@@ -73,14 +126,19 @@ impl Engine {
 
     /// Every configured vault, for the vault menu.
     pub fn vaults(&self) -> Vec<VaultInfo> {
-        self.vaults
-            .iter()
-            .map(|vault| VaultInfo {
-                id: vault.path().to_string_lossy().into_owned(),
-                name: vault.name(),
-                active: self.active.as_deref() == Some(vault.path()),
-            })
-            .collect()
+        self.vaults.iter().map(|vault| self.info_for(vault)).collect()
+    }
+
+    /// The vaults for the picker: most recently opened first, and only as many
+    /// as it can show. One list serves both this and the vault menu.
+    pub fn recent_vaults(&self) -> Vec<VaultInfo> {
+        let mut recent = self.vaults();
+        // Sort on the vault itself, not the info, so ordering never depends on
+        // what the info happens to expose.
+        recent.sort_by(|a, b| b.last_opened.cmp(&a.last_opened).then(a.name.cmp(&b.name)));
+        recent.truncate(MAX_RECENT_VAULTS);
+
+        recent
     }
 
     /// Switches which vault is being read, and persists. An unknown path is
@@ -91,6 +149,11 @@ impl Engine {
         }
 
         self.active = Some(path.to_path_buf());
+        // Opening a vault is what "recently opened" means.
+        let now = now_millis();
+        if let Some(vault) = self.vaults.iter_mut().find(|vault| vault.path() == path) {
+            vault.set_last_opened(now);
+        }
         self.rebuild();
 
         self.persist()
@@ -104,12 +167,42 @@ impl Engine {
         }
 
         let is_first = self.vaults.is_empty();
-        self.vaults.push(Vault::new(path.clone()));
+        let mut vault = Vault::new(path.clone());
+        vault.set_color(self.spare_color());
+        self.vaults.push(vault);
+
         if is_first {
             return self.set_active(&path);
         }
 
         self.persist()
+    }
+
+    /// Creates a vault at `path` — the folder, one book in it, and one note in
+    /// that — then adds it and opens it. This is what the picker's quick start
+    /// does, so a first run lands somewhere to write rather than nowhere.
+    ///
+    /// Refuses a folder that already holds anything: turning someone's existing
+    /// directory into a vault is the caller's decision to make, through
+    /// `add_vault`, not a side effect of this.
+    pub fn create_vault(&mut self, path: PathBuf, book: &str, note: &str) -> io::Result<()> {
+        if path.exists() && path.read_dir().is_ok_and(|mut entries| entries.next().is_some()) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("'{}' already has something in it", path.display()),
+            ));
+        }
+
+        let book_dir = path.join(validate_name(book)?);
+        std::fs::create_dir_all(&book_dir)?;
+        vault::Binding::write(&book_dir, BINDING_PALETTE[0], "Library")?;
+        document::create_note(&book_dir, validate_name(note)?)?;
+
+        self.add_vault(path.clone())?;
+
+        // add_vault only opens the first vault added; a vault you just asked to
+        // be made is one you meant to open.
+        self.set_active(&path)
     }
 
     /// Removes the vault at `path` and persists. Removing the active vault falls
@@ -249,6 +342,55 @@ impl Engine {
         self.persist()
     }
 
+    /// How large the chrome draws, as a percentage.
+    pub fn ui_scale(&self) -> u32 {
+        self.ui_scale
+    }
+
+    /// Sets the chrome's size, clamped to what still lays out, and persists.
+    pub fn set_ui_scale(&mut self, scale: u32) -> io::Result<()> {
+        let scale = scale.clamp(MIN_UI_SCALE, MAX_UI_SCALE);
+        if scale == self.ui_scale {
+            return Ok(());
+        }
+
+        self.ui_scale = scale;
+        self.persist()
+    }
+
+    /// How much room the chrome gives itself, as a percentage.
+    pub fn density(&self) -> u32 {
+        self.density
+    }
+
+    /// Sets the chrome's roominess, clamped, and persists.
+    pub fn set_density(&mut self, density: u32) -> io::Result<()> {
+        let density = density.clamp(MIN_DENSITY, MAX_DENSITY);
+        if density == self.density {
+            return Ok(());
+        }
+
+        self.density = density;
+        self.persist()
+    }
+
+    /// The theme the UI wears.
+    pub fn theme(&self) -> &str {
+        &self.theme
+    }
+
+    /// Remembers which theme the UI wears. Any name is accepted: naming the
+    /// themes is the UI's business, and it already falls back for one it does
+    /// not recognise.
+    pub fn set_theme(&mut self, theme: &str) -> io::Result<()> {
+        if theme == self.theme {
+            return Ok(());
+        }
+
+        self.theme = theme.to_string();
+        self.persist()
+    }
+
     /// The configured vault paths.
     pub fn vault_paths(&self) -> Vec<PathBuf> {
         self.vaults.iter().map(|vault| vault.path().to_path_buf()).collect()
@@ -275,6 +417,54 @@ impl Engine {
         self.active_path().map(vault::books_in).unwrap_or_default()
     }
 
+    /// Sets a book's binding — the colour of its spine and the shelf it stands
+    /// on — by writing the book's own booklet.json, then re-reads the tree.
+    pub fn set_binding(&mut self, book: &Path, color: &str, shelf: &str) -> io::Result<()> {
+        vault::Binding::write(book, color, shelf)?;
+        self.refresh();
+
+        Ok(())
+    }
+
+    /// Notes in the active vault whose text contains `query`.
+    pub fn search(&self, query: &str) -> Vec<Hit> {
+        self.active_path().map(|vault| search::search(vault, query)).unwrap_or_default()
+    }
+
+    fn info_for(&self, vault: &Vault) -> VaultInfo {
+        VaultInfo {
+            id: vault.path().to_string_lossy().into_owned(),
+            name: vault.name(),
+            active: self.active.as_deref() == Some(vault.path()),
+            color: vault.color().to_string(),
+            last_opened: vault.last_opened(),
+        }
+    }
+
+    /// The first palette colour no vault is using, so two vaults added in a row
+    /// do not get the same dot. Past six vaults the palette repeats, which is
+    /// better than inventing colours outside it.
+    fn spare_color(&self) -> String {
+        let taken: Vec<&str> = self.vaults.iter().map(|vault| vault.color()).collect();
+
+        BINDING_PALETTE
+            .iter()
+            .find(|color| !taken.contains(color))
+            .unwrap_or(&BINDING_PALETTE[self.vaults.len() % BINDING_PALETTE.len()])
+            .to_string()
+    }
+
+    /// Gives a colour to any vault that has none — one loaded from a config
+    /// written before vaults had colours.
+    fn color_unpainted_vaults(&mut self) {
+        for index in 0..self.vaults.len() {
+            if self.vaults[index].color().is_empty() {
+                let color = self.spare_color();
+                self.vaults[index].set_color(color);
+            }
+        }
+    }
+
     fn active_vault(&self) -> Option<&Vault> {
         let active = self.active.as_deref()?;
         self.vaults.iter().find(|vault| vault.path() == active)
@@ -287,15 +477,23 @@ impl Engine {
         self.rebuild_with(&expanded);
     }
 
+    /// Re-reads every vault's tree from disk. What a vault *is* — its colour,
+    /// when it was last opened — is not on disk and so is carried across;
+    /// rebuilding from paths alone would quietly wipe both, and the file watcher
+    /// calls this on every write.
     fn rebuild_with(&mut self, expanded: &HashSet<PathBuf>) {
         let active = self.active.clone();
 
         self.vaults = self
-            .vault_paths()
-            .into_iter()
-            .map(|path| {
+            .vaults
+            .iter()
+            .map(|vault| (vault.path().to_path_buf(), vault.color().to_string(), vault.last_opened()))
+            .map(|(path, color, last_opened)| {
                 let is_active = active.as_deref() == Some(path.as_path());
-                build_vault(path, expanded, is_active)
+                let mut rebuilt = build_vault(path, expanded, is_active);
+                rebuilt.set_color(color);
+                rebuilt.set_last_opened(last_opened);
+                rebuilt
             })
             .collect();
     }
@@ -314,10 +512,21 @@ impl Engine {
         expanded.sort();
 
         let config = Config {
-            vaults: self.vault_paths(),
+            vaults: self
+                .vaults
+                .iter()
+                .map(|vault| VaultEntry {
+                    path: vault.path().to_path_buf(),
+                    color: vault.color().to_string(),
+                    last_opened: vault.last_opened(),
+                })
+                .collect(),
             active: self.active.clone(),
             expanded,
             editor_font_size: Some(self.editor_font_size),
+            theme: Some(self.theme.clone()),
+            ui_scale: Some(self.ui_scale),
+            density: Some(self.density),
         };
         config::save(&self.config_path, &config)
     }
@@ -345,6 +554,17 @@ fn validate_name(name: &str) -> io::Result<&str> {
 /// deliberate: it is what keeps a vault hydrated once it stops being active, so
 /// the folders you left open inside it are still open when you switch back. A
 /// vault that has never been active has nothing to preserve and stays unread.
+/// Wall-clock milliseconds since the epoch.
+///
+/// Milliseconds, not seconds: clicking a vault in the picker and switching again
+/// happens well inside one second, and at second resolution those opens tie and
+/// the list falls back to alphabetical — showing an order the user did not
+/// create. Only ever used to order that list, so a clock that jumps merely
+/// reorders it.
+fn now_millis() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|since| since.as_millis() as u64).unwrap_or_default()
+}
+
 fn build_vault(path: PathBuf, expanded: &HashSet<PathBuf>, is_active: bool) -> Vault {
     let mut vault = Vault::new(path);
 
@@ -738,6 +958,212 @@ mod tests {
         let mut reloaded = Engine::new(config_path.clone());
         reloaded.load().unwrap();
         assert_eq!(reloaded.editor_font_size(), 20);
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn recent_vaults_put_the_one_you_were_last_in_first() {
+        let (config_path, first) = fixture();
+        let second = extra_vault(&config_path, "Second", "Ledger");
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(first.clone()).unwrap();
+        engine.add_vault(second.clone()).unwrap();
+
+        // Opening is what makes a vault recent, so open them in a known order.
+        engine.set_active(&first).unwrap();
+        engine.set_active(&second).unwrap();
+
+        let names: Vec<String> = engine.recent_vaults().into_iter().map(|info| info.name).collect();
+        assert_eq!(names, ["Second", "Vault"]);
+
+        // And going back to the first puts it back on top.
+        engine.set_active(&first).unwrap();
+        let names: Vec<String> = engine.recent_vaults().into_iter().map(|info| info.name).collect();
+        assert_eq!(names, ["Vault", "Second"]);
+
+        cleanup(&config_path);
+    }
+
+    /// `refresh` re-reads the tree from disk, and the file watcher calls it on
+    /// every write. Colour and last-opened are not on disk, so a rebuild that
+    /// forgot to carry them over would wipe the picker's list as you typed.
+    #[test]
+    fn refreshing_keeps_what_is_not_on_disk() {
+        let (config_path, vault) = fixture();
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(vault.clone()).unwrap();
+        engine.set_active(&vault).unwrap();
+
+        let before = engine.vaults().remove(0);
+        engine.refresh();
+        let after = engine.vaults().remove(0);
+
+        assert_eq!(after.color, before.color);
+        assert_eq!(after.last_opened, before.last_opened);
+        assert_ne!(after.last_opened, 0);
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn vaults_are_given_different_colors() {
+        let (config_path, first) = fixture();
+        let second = extra_vault(&config_path, "Second", "Ledger");
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(first).unwrap();
+        engine.add_vault(second).unwrap();
+
+        let colors: Vec<String> = engine.vaults().into_iter().map(|info| info.color).collect();
+        assert_eq!(colors.len(), 2);
+        assert_ne!(colors[0], colors[1]);
+        assert!(BINDING_PALETTE.contains(&colors[0].as_str()));
+
+        cleanup(&config_path);
+    }
+
+    /// A config of bare paths is what every install had before the picker.
+    /// Loading one must keep the vault, give it a dot, and count reopening it
+    /// as an open — otherwise the picker calls the vault on screen "never
+    /// opened".
+    #[test]
+    fn a_config_of_bare_paths_loads_complete() {
+        let (config_path, vault) = fixture();
+        std::fs::create_dir_all(config_path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"{{ "vaults": ["{0}"], "active": "{0}" }}"#,
+                vault.to_string_lossy()
+            ),
+        )
+        .unwrap();
+
+        let mut engine = Engine::new(config_path.clone());
+        engine.load().unwrap();
+
+        let info = &engine.vaults()[0];
+        assert_eq!(engine.active_path(), Some(vault.as_path()));
+        assert!(!info.color.is_empty());
+        assert_ne!(info.last_opened, 0);
+        // The tree came up, so the notes are reachable.
+        assert_eq!(titles(&engine), ["Book"]);
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn create_vault_seeds_a_book_and_a_note_and_opens_it() {
+        let (config_path, _) = fixture();
+        let fresh = config_path.parent().unwrap().join("Fresh");
+        let mut engine = Engine::new(config_path.clone());
+
+        engine.create_vault(fresh.clone(), "First Book", "Welcome").unwrap();
+
+        assert_eq!(engine.active_path(), Some(fresh.as_path()));
+        assert!(fresh.join("First Book/Welcome.md").exists());
+        assert_eq!(engine.books()[0].title, "First Book");
+        // It landed somewhere you can write immediately.
+        assert_eq!(titles(&engine), ["First Book"]);
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn create_vault_refuses_a_folder_that_already_holds_something() {
+        let (config_path, existing) = fixture();
+        let mut engine = Engine::new(config_path.clone());
+
+        // `existing` is the sample vault, full of somebody's notes.
+        let error = engine.create_vault(existing, "Book", "Note").unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert!(engine.vaults().is_empty());
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn ui_scale_and_density_are_clamped_and_persist() {
+        let (config_path, vault) = fixture();
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(vault).unwrap();
+
+        assert_eq!(engine.ui_scale(), DEFAULT_UI_SCALE);
+        assert_eq!(engine.density(), DEFAULT_DENSITY);
+
+        // Nobody gets chrome at 10% or 900%.
+        engine.set_ui_scale(900).unwrap();
+        assert_eq!(engine.ui_scale(), MAX_UI_SCALE);
+        engine.set_density(1).unwrap();
+        assert_eq!(engine.density(), MIN_DENSITY);
+
+        engine.set_ui_scale(125).unwrap();
+        engine.set_density(120).unwrap();
+        let mut reloaded = Engine::new(config_path.clone());
+        reloaded.load().unwrap();
+        assert_eq!(reloaded.ui_scale(), 125);
+        assert_eq!(reloaded.density(), 120);
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn theme_persists() {
+        let (config_path, vault) = fixture();
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(vault).unwrap();
+
+        assert_eq!(engine.theme(), DEFAULT_THEME);
+
+        engine.set_theme("atlas").unwrap();
+        let mut reloaded = Engine::new(config_path.clone());
+        reloaded.load().unwrap();
+        assert_eq!(reloaded.theme(), "atlas");
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn setting_a_binding_keeps_the_rest_of_booklet_json() {
+        let (config_path, vault) = fixture();
+        let book = vault.join("Book");
+        // A key the app knows nothing about, as a hand-edited file may well have.
+        std::fs::write(book.join("booklet.json"), r##"{ "color": "#7C3128", "mine": "keep me" }"##)
+            .unwrap();
+
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(vault).unwrap();
+        engine.set_binding(&book, "#2F3E5C", "Work").unwrap();
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(book.join("booklet.json")).unwrap())
+                .unwrap();
+        assert_eq!(written["color"], "#2F3E5C");
+        assert_eq!(written["shelf"], "Work");
+        assert_eq!(written["mine"], "keep me");
+        // The tree re-read the file, so the shelf sees the new binding.
+        assert_eq!(engine.books()[0].color, "#2F3E5C");
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn search_reads_the_active_vault_only() {
+        let (config_path, first) = fixture();
+        let second = extra_vault(&config_path, "Second", "Ledger");
+        std::fs::write(second.join("Ledger/Hidden.md"), "# Hidden\n\nA deep secret.\n").unwrap();
+        std::fs::write(first.join("Book/Top Note.md"), "# Top\n\nA deep secret too.\n").unwrap();
+
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(first).unwrap();
+        engine.add_vault(second).unwrap();
+
+        let titles: Vec<String> =
+            engine.search("deep secret").into_iter().map(|hit| hit.title).collect();
+
+        // The second vault holds a match, but it is not the one being read.
+        assert_eq!(titles, ["Top Note"]);
 
         cleanup(&config_path);
     }

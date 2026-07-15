@@ -276,18 +276,28 @@ Gaps found comparing the reference to the current QML:
 
 ### 5f — Marginalia and the star map
 
-- [ ] **Star map ("sightlines")** at the top of the pane on `--code-bg`: the open
+- [x] **Star map ("sightlines")** at the top of the pane on `--code-bg`: the open
       note is the centre star (`--link` ring, `--text-bright` core); incoming refs
       are `--text-soft` dots, outgoing links `--link` dots, unresolved hollow
       `--text-dim` on dashed sightlines. Lines 0.7px at ~55%, labels 7px mono
-      uppercase. **Radial spread — angle by index with slight radius jitter, no
-      force simulation.** Cap ~10 dots; the card list carries the overflow.
-      Clicking a dot opens that note; unresolved dots create it via
-      `open_by_title`.
-- [ ] Needs one new slot: **`NoteEditor.outgoing_links()`**. Everything else is
-      data the pane already has.
-- [ ] **Tags** — `#tag` parsing in core, pills in the pane. No tag concept exists
-      today.
+      uppercase — labels stay uniformly `--text-dim` (the dot carries the kind),
+      as the reference has them. **Radial spread — angle by index with slight
+      radius jitter, no force simulation.** Cap ~10 dots; the card list carries
+      the overflow. Clicking a dot opens that note; unresolved dots create it via
+      `open_by_title`. `StarMap.qml` draws the sightlines on a `Canvas` but the
+      dots are real Items, so they hit-test themselves.
+      - **A mutual link is one star, not two.** A note that links back and is
+        linked to appears once, keeping the outgoing colour — that dot answers to
+        a `[[link]]` visible in the text being read. Found by probing the real
+        data: it had drawn two same-named dots at different angles.
+- [x] Needs one new slot: **`NoteEditor.outgoing_links()`**. Everything else is
+      data the pane already has. Reads the editor's in-memory text, not the disk,
+      so the map keeps up with what has been typed.
+- [x] **Tags** — `#tag` parsing in core (`booklet-core/src/tags.rs`), pills at the
+      foot of the pane. A tag is `#` + a letter starting a word, which is what
+      separates it from a `# Heading`, a `#anchor` in a URL and a `#3C5240`;
+      fenced code blocks hold no tags. Tags are read-only for now — no filtering
+      or tag index yet.
 
 ### 5h — Vault picker (welcome screen)
 
@@ -295,26 +305,41 @@ The reference's welcome screen: a centred 520px column on `--sidebar` — book
 mark, wordmark, version (`CARGO_PKG_VERSION`), one primary button, a *recently
 opened* card, an actions card, and a language row.
 
-- [ ] **Config model change.** Vault entries stop being plain paths and become
+- [x] **Config model change.** Vault entries stopped being plain paths and became
       `{ path, color, last_opened }`. **One list serves both** the picker
-      (sorted most-recent-first, capped at 8) and the topbar menu — the
-      reference's `recent.json` and `remove_recent()` collapse into the vault
-      list we already persist, and `remove_vault` already means "forget it, do
-      not touch the disk". `last_opened` is epoch seconds (QML formats the
-      relative time); `color` is auto-assigned from the binding palette on add.
-- [ ] **New core:** `recent_vaults()` (the capped, sorted view) and
-      `create_vault(path)`. Opening a vault bumps its `last_opened`.
-- [ ] **Picker QML** — mark (56px `Shape`), wordmark, version, recents rows (dot
-      = the vault's colour, name in the display face, path in mono `--text-dim`,
-      relative time, × removes from the list only), actions card: **Create** /
-      **Open folder** / **Sign in**.
-- [ ] **Quick start** — the app's *only* filled button: creates a starter vault
-      (a default location, one book, one note) and opens it, so a first run lands
-      somewhere instead of an empty picker.
-- [ ] **Shown when there is no vault to reopen** — a bare start otherwise
+      (sorted most-recent-first, capped at 8) and the topbar menu; `remove_vault`
+      already meant "forget it, do not touch the disk". `color` is auto-assigned
+      from the binding palette on add — the first one going spare, so two vaults
+      never share a dot until the palette runs out.
+      - **`last_opened` is epoch *milliseconds*, not seconds** as first planned.
+        A test caught it: clicking through the picker opens two vaults well
+        inside one second, those opens tie at second resolution, and the list
+        falls back to alphabetical — showing an order the user did not create.
+      - **Configs of bare paths still load.** `VaultEntry` has a hand-written
+        `Deserialize` that reads a path string *or* the object; without it every
+        vault already configured would vanish on upgrade. Colourless vaults are
+        painted at load, and reopening the last vault counts as an open, so the
+        picker never calls the vault on screen "never opened". Verified against
+        a copy of the real `~/.config/booklet/vaults.json`.
+- [x] **New core:** `recent_vaults()` (the capped, sorted view) and
+      `create_vault(path, book, note)`. Opening a vault bumps its `last_opened`.
+      `create_vault` **refuses a folder that already holds anything** — turning
+      someone's directory into a vault is `add_vault`'s job to be asked for, not
+      a side effect. (Known edge: quick start onto an existing `~/Documents/
+      Booklet` reports that rather than adopting it. Use *Open* for that.)
+- [x] **Picker QML** — mark (56px `Shape`), wordmark, version
+      (`CARGO_PKG_VERSION` via `Library.version()`), recents rows (dot = the
+      vault's colour, name in the display face, path in mono `--text-dim` with
+      `~` for home, relative time, × removes from the list only), actions card:
+      **Create** / **Open folder** / **Sign in**.
+- [x] **Quick start** — the app's only filled button: creates a starter vault at
+      `~/Documents/Booklet` (one book, one note) and opens it, so a first run
+      lands somewhere instead of an empty picker.
+- [x] **Shown when there is no vault to reopen** — a bare start otherwise
       reopens the vault you were last in. Reachable any time from the vault menu
-      ("Open another vault…").
-- [ ] **Sign in** ships inert until the sync engine (M2), like the sync pill.
+      ("Open another vault…"), which replaced its own folder dialog with this.
+      Escape backs out **only when there is a vault to go back to**.
+- [x] **Sign in** ships inert until the sync engine (M2), like the sync pill.
 
 Deviations from the reference here, decided with the user:
 
@@ -326,15 +351,60 @@ Deviations from the reference here, decided with the user:
   multi-vault work replaced it with `add_vault` + `set_active`. Same drift as its
   `link_unresolved` note.
 
+**Fixed while building this:** `Engine::rebuild_with` rebuilt every vault from
+its path alone, so it silently dropped colour and last-opened. `refresh()` calls
+it and the **file watcher calls `refresh` on every write** — the picker's recency
+would have been wiped as you typed, and the next save would have persisted the
+zeros. It now carries across what is not on disk, with a regression test proven
+to fail against the old code.
+
 ### 5g — Beyond
 
-- [ ] **Full-text search** across the vault (the ⌘K switcher matches titles only).
-      Starts as an on-demand scan — CLAUDE.md defers a persistent index until
-      measured.
-- [ ] **Book metadata editing** — binding color and shelf label are hand-edited
-      in `booklet.json` today; needs core write support.
-- [ ] **Settings screen** — vault list, config location, and the **theme picker**
-      (its only home now that `⌘T` belongs to tabs).
+- [x] **Full-text search** across the vault, in the ⌘K switcher: titles match as
+      you type, and notes whose *writing* holds the query follow under an
+      `IN TEXT` marker, each with the line it says it on. A note matched both
+      ways is listed once, under its title. The scan reads every note, so it
+      waits 180ms for a pause and ignores queries under 2 characters — an
+      on-demand scan, as CLAUDE.md defers a persistent index until measured.
+      `search.rs` finds matches without lowercasing the haystack: that can change
+      a string's length, and the snippet is cut from the original at that offset.
+- [x] **Book metadata editing** — right-click a book → **Binding…**: the six
+      binding colours and the shelf label, written to the book's own
+      `booklet.json`. The write is read-modify-write, so **keys the app knows
+      nothing about survive** — it is a plain file a person may have edited.
+- [x] **Reading size in the settings screen** — a slider (11–40, the range the
+      engine clamps to), with a line of prose set at the chosen size next to it.
+      ⌘+ / ⌘− still work.
+- [x] **Interface size and density** — Settings → Appearance, both persisted
+      (`ui_scale`, `density`, whole percents so the config stays hand-editable;
+      clamped 80–160 and 80–150 by the engine). `Theme.px()` scales type and
+      furniture, `Theme.gap()` the room between things, `Theme.row()` anything
+      holding type (by both, or text outgrows its row). ~80 hardcoded sizes were
+      swept onto them. Verified live: at 150%/140% the topbar goes 38→80px and
+      `px(13)`→20.
+- [x] **Rounded, animated chrome** — one motion vocabulary in `Theme`
+      (`quick`/`gentle`/`easing`, `radiusSmall`/`radiusCard`). Selections warm
+      into their highlight instead of snapping; menus and modals fade and scale
+      in. **The two context menus were stock `Menu`** — square grey boxes from
+      the Basic style, belonging to no theme — and are now `AppMenu`/
+      `AppMenuItem`. `SettingSlider` replaced the third copy of hand-styled
+      slider internals.
+- [x] **Settings** (`⌘,` or the topbar gear) — a **modal** (`Popup`, 760×520,
+      capped to the window) with the categories down a sidebar and the chosen one
+      in the right pane: **Vaults** (open / forget / add via a folder dialog),
+      **Appearance** (the theme picker), **Editor** (reading size, with a sample
+      line set at it), **About** (version, config location). The reference draws
+      no settings screen, so the vocabulary is borrowed from the parts that do
+      exist — the tree's sidebar for the rail, the picker's cards for the panes.
+      Being a modal, it closes itself on Escape or a click outside and needs no
+      full-window flag; a × sits top-right, since neither of those is visible.
+      - **The theme now persists** (`theme` in the config). A picker whose choice
+        is forgotten on restart is not a setting, so this went in with it. The
+        engine stores the name without validating it — naming the themes is the
+        UI's business, and `Theme.qml` already falls back for a name it does not
+        know.
+      - `TextButton.qml` joins `IconButton.qml`: stock Controls buttons speak
+        none of the reference's language, and the app runs under Basic style.
 
 Explicitly **not** in this milestone: block add/delete/reorder, tree filter
 field, drag-and-drop moves, split view.

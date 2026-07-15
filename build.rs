@@ -10,6 +10,7 @@ use qtbridge_build_utils::qt_build::QtInstallation;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+const QML_DIR: &str = "src/booklet";
 const FONTS_QRC: &str = "src/booklet/fonts.qrc";
 const FONTS_DIR: &str = "src/booklet/fonts";
 const HIGHLIGHTER_HEADER: &str = "src/cpp/markdown_highlighter.h";
@@ -22,8 +23,24 @@ fn main() {
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR is set"));
     let qt = QtInstallation::new();
 
+    watch_qml();
     compile_fonts(&out_dir);
     compile_highlighter(&qt, &out_dir);
+}
+
+/// `include_bytes_qml!` reads the QML at macro-expansion time and expands it to
+/// token literals, so rustc never records it as a dependency. Without this,
+/// editing a `.qml` and rebuilding silently keeps the old UI in the binary.
+fn watch_qml() {
+    for entry in std::fs::read_dir(QML_DIR).expect("QML directory is present") {
+        let path = entry.expect("readable QML entry").path();
+        let watched = path.extension().is_some_and(|ext| ext == "qml")
+            || path.file_name().is_some_and(|name| name == "qmldir");
+
+        if watched {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
 }
 
 /// `include_bytes_qml!` expands every byte of a file into a token literal, which

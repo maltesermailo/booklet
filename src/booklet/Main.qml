@@ -11,9 +11,12 @@ ApplicationWindow {
     title: root.noteTitle === "" ? "Booklet" : root.noteTitle + " — Booklet"
     color: Theme.bg
 
-    // The shelf is a full-window browse mode; the reading layout hides while
-    // it is up.
+    // The shelf is a full-window mode; the reading layout hides while it is up.
+    // Settings is a modal over it, so it needs no flag of its own.
     property bool shelfOpen: false
+    // The welcome screen. Shown when there is no vault to reopen; a bare start
+    // otherwise goes straight back to where you were reading.
+    property bool pickerOpen: false
     property bool sidebarVisible: true
     property bool marginaliaVisible: true
     property string noteTitle: ""
@@ -61,8 +64,12 @@ ApplicationWindow {
         // Load the persisted vault list; a path argument seeds/adds one vault
         // (handy for the bundled sample: `cargo run -- "$(pwd)/vault"`).
         Library.load()
+        Theme.mode = Library.theme()
+        Theme.reloadChrome()
         if (Qt.application.arguments.length > 1)
             Library.add_vault(Qt.application.arguments[1])
+
+        root.pickerOpen = Library.active_vault() === ""
 
         // Links resolve inside a note's own vault; both need the vault list.
         NoteEditor.load()
@@ -99,7 +106,7 @@ ApplicationWindow {
     }
 
     // Qt maps Ctrl to Cmd on macOS, so these are Cmd+K / Cmd+L / … there.
-    // The theme toggle has no shortcut by design — it lives in Settings (5g).
+    // The theme toggle has no shortcut by design — it lives in Settings.
     Shortcut {
         sequence: "Ctrl+K"
         onActivated: quickSwitcher.openSwitcher()
@@ -111,6 +118,15 @@ ApplicationWindow {
     Shortcut {
         sequence: "Ctrl+T"
         onActivated: root.newTab()
+    }
+    // ⌘, is where every Mac app keeps its settings, and the comma is unshifted
+    // on a German layout as well.
+    Shortcut {
+        sequence: "Ctrl+,"
+        // `visible`, not `opened`: with an enter transition, `opened` only
+        // turns true once the animation finishes, so a quick second ⌘, would
+        // open it again instead of closing it.
+        onActivated: settingsView.visible ? settingsView.close() : settingsView.open()
     }
     Shortcut {
         sequence: "Ctrl+W"
@@ -136,8 +152,14 @@ ApplicationWindow {
     }
     Shortcut {
         sequence: "Escape"
-        enabled: root.shelfOpen
-        onActivated: root.shelfOpen = false
+        // The picker closes only when there is a vault to close to; with none,
+        // Escape would drop you on an empty reading pane. Settings is a Popup
+        // and closes itself.
+        enabled: root.shelfOpen || (root.pickerOpen && Library.active_vault() !== "")
+        onActivated: {
+            root.shelfOpen = false
+            root.pickerOpen = false
+        }
     }
 
     // A new tab has nothing to show until you pick a note, so open the switcher
@@ -152,7 +174,7 @@ ApplicationWindow {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
-        visible: !root.shelfOpen
+        visible: !root.shelfOpen && !root.pickerOpen
 
         TopBar {
             Layout.fillWidth: true
@@ -168,6 +190,8 @@ ApplicationWindow {
             marginaliaHidden: !root.marginaliaVisible
             onShowSidebar: root.sidebarVisible = true
             onShowMarginalia: root.marginaliaVisible = true
+            onOpenSettings: settingsView.open()
+            onOpenPicker: root.pickerOpen = true
         }
 
         SplitView {
@@ -218,6 +242,10 @@ ApplicationWindow {
         StatusBar { Layout.fillWidth: true }
     }
 
+    // One full-window mode at a time; two stacked would strand the lower one.
+    onShelfOpenChanged: if (shelfOpen) pickerOpen = false
+    onPickerOpenChanged: if (pickerOpen) shelfOpen = false
+
     ShelfView {
         id: shelfView
         anchors.fill: parent
@@ -228,5 +256,13 @@ ApplicationWindow {
             Library.reveal(id)
             root.shelfOpen = false
         }
+    }
+
+    SettingsView { id: settingsView }
+
+    VaultPicker {
+        anchors.fill: parent
+        visible: root.pickerOpen
+        onDismissed: root.pickerOpen = false
     }
 }

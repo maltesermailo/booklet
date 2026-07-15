@@ -8,7 +8,7 @@ import booklet
 Rectangle {
     id: strip
 
-    height: 33
+    height: Theme.row(33)
     color: Theme.sidebar
 
     property var tabs: []
@@ -94,7 +94,7 @@ Rectangle {
                 readonly property bool active: index === strip.current
 
                 width: Math.min(180, tabLabel.implicitWidth + 46)
-                height: 28
+                height: Theme.row(28)
                 topLeftRadius: 6
                 topRightRadius: 6
                 color: tab.active ? Theme.bg : "transparent"
@@ -120,7 +120,7 @@ Rectangle {
                     text: tab.modelData.title
                     color: tab.active ? Theme.textBright : Theme.textSoft
                     font.family: Theme.ui
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.px(13)
                     elide: Text.ElideRight
                 }
 
@@ -130,7 +130,7 @@ Rectangle {
                     anchors.right: parent.right
                     anchors.rightMargin: 7
                     width: 16
-                    height: 16
+                    height: Theme.row(16)
                     radius: 3
                     color: closeHover.hovered ? Theme.activePill : "transparent"
 
@@ -144,7 +144,7 @@ Rectangle {
                         anchors.centerIn: parent
                         text: "×"
                         color: closeHover.hovered ? Theme.textBright : Theme.textDim
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.px(13)
                     }
 
                     MouseArea {
@@ -173,9 +173,9 @@ Rectangle {
         Rectangle {
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 3
-            width: 24
-            height: 24
-            radius: 5
+            width: Theme.row(24)
+            height: Theme.row(24)
+            radius: Theme.radiusSmall
             color: addHover.hovered ? Theme.activePill : "transparent"
 
             HoverHandler { id: addHover }
@@ -188,7 +188,7 @@ Rectangle {
                 anchors.centerIn: parent
                 text: "+"
                 color: addHover.hovered ? Theme.textBright : Theme.textSoft
-                font.pixelSize: 15
+                font.pixelSize: Theme.px(15)
             }
 
             MouseArea {

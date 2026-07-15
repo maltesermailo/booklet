@@ -64,7 +64,7 @@ Rectangle {
                 text: "Library"
                 color: Theme.textBright
                 font.family: Theme.display
-                font.pixelSize: 32
+                font.pixelSize: Theme.px(32)
             }
 
             Text {
@@ -72,7 +72,7 @@ Rectangle {
                 text: "No books yet — add a vault with folders in it."
                 color: Theme.textDim
                 font.family: Theme.ui
-                font.pixelSize: 13
+                font.pixelSize: Theme.px(13)
             }
 
             Repeater {
@@ -89,8 +89,8 @@ Rectangle {
                         text: shelfGroup.modelData.name.toUpperCase()
                         color: Theme.brass
                         font.family: Theme.ui
-                        font.pixelSize: 11
-                        font.letterSpacing: 1.5
+                        font.pixelSize: Theme.px(11)
+                        font.letterSpacing: 1.5 * Theme.uiScale
                     }
 
                     Row {
@@ -150,7 +150,7 @@ Rectangle {
                                         text: slot.modelData.title
                                         color: "#EDE6D6"
                                         font.family: Theme.display
-                                        font.pixelSize: 13
+                                        font.pixelSize: Theme.px(13)
                                         horizontalAlignment: Text.AlignHCenter
                                         elide: Text.ElideRight
                                     }
@@ -163,7 +163,7 @@ Rectangle {
                                         color: "#EDE6D6"
                                         opacity: 0.7
                                         font.family: Theme.mono
-                                        font.pixelSize: 9
+                                        font.pixelSize: Theme.px(9)
                                     }
 
                                     MouseArea {

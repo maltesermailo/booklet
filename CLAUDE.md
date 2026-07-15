@@ -24,18 +24,29 @@ else without asking — every other feature so far has been reachable from Rust.
 1. **Library tree** — a configurable set of vaults (the list persisted in
    `~/.config/booklet/vaults.json`). **One vault is active at a time** (as in
    Obsidian); the tree shows *its* books as the roots — there is no vault row —
-   and the topbar menu switches vaults. Each vault holds books (its top-level
+   and the topbar menu switches vaults. A start with no vault to reopen shows
+   the vault picker (`VaultPicker.qml`); otherwise the app goes straight back to
+   the vault you were last in. Each vault holds books (its top-level
    folders, each with a `booklet.json` carrying binding color and shelf label)
    containing sections (folders, nesting without limit) containing notes
-   (`.md`). The shelf and the quick switcher scope to the active vault; links
-   and backlinks scope to the note's own vault.
+   (`.md`). A book's binding is edited from the tree (right-click → Binding…),
+   which writes that same `booklet.json` while keeping any keys the app does not
+   know — it is a plain file the user may have edited. The shelf and the quick
+   switcher scope to the active vault (the switcher matches titles *and* note
+   text); links and backlinks scope to the note's own vault.
 2. **Live preview editor** — the pane *is* the note: one always-editable
    surface over the whole markdown, as in Obsidian. There is no mode to enter
    and no block to click. The C++ highlighter (`src/cpp/`) styles it as you
    type — a heading takes its face immediately — and shows the syntax markers
    only on the line holding the caret, collapsing them to zero width elsewhere
-   so the text reflows as if they were not written. Wiki-links are followed with
-   ⌘+click, since plain clicks belong to the caret. Typing reaches Rust on every
+   so the text reflows as if they were not written. **Clicking a wiki-link on a
+   line you are not editing follows it** — its markers are collapsed, so it is
+   rendered text, and rendered text navigates (as in Obsidian). On the line
+   holding the caret the markers are showing and a plain click stays the
+   caret's; ⌘+click follows a link there too. The pre-click caret line is
+   captured in the tap handler's `onPressedChanged`, because the editor moves
+   the caret to the click on press — by the time the tap completes, every click
+   looks like it landed on the caret's own line. Typing reaches Rust on every
    keystroke (`set_source`) but the disk only on a pause (`flush`), and
    `open`/`close` flush first so switching notes cannot drop edits.
    *(This replaces the earlier click-a-block-to-reveal-source design, which the
@@ -76,11 +87,22 @@ else without asking — every other feature so far has been reachable from Rust.
   shared `Folder` trait — `Vault` → `Book` → `Section`* → `Note` — where each
   folder **owns its own `expanded` flag** and reads children from disk when
   opened (so expansion is per-object, never a shared id-keyed set). `config.rs`
-  persists the vault paths, the **active** vault, and the expanded-folder paths
-  (`~/.config/booklet/vaults.json`, an object
-  `{ "vaults": [...], "active": ..., "expanded": [...] }`). `Engine::refresh()` rebuilds from
-  disk preserving open folders — to be driven by a file watcher (via
-  `QmlMethodInvoker`, not yet wired). `src/library.rs` is a thin qtbridge
+  persists the vaults, the **active** one, the expanded-folder paths, the
+  editor's reading size, and the theme (`~/.config/booklet/vaults.json`, an
+  object `{ "vaults": [{ "path", "color", "last_opened" }, ...], "active": ...,
+  "expanded": [...], "editor_font_size": ..., "theme": ... }`). `last_opened` is
+  epoch **milliseconds** — seconds tie when you click through the picker, and a
+  tie makes the "recently opened" list fall back to alphabetical. `VaultEntry`
+  hand-writes `Deserialize` so a **`vaults` list of bare path strings still
+  loads**: that is what every config written before the picker holds, and
+  dropping it would delete somebody's library list. Keep that path working.
+  The engine keeps the theme's *name* without validating it: naming the themes
+  is the UI's business, and `Theme.qml` falls back on its own for a name it does
+  not know. A vault's colour and `last_opened` are **not on disk**, so anything
+  rebuilding the tree must carry them across (`rebuild_with` does) — the file
+  watcher calls `refresh` on every write, and a rebuild from paths alone would
+  wipe them as you type. `Engine::refresh()` rebuilds from disk preserving open
+  folders — driven by the file watcher via `QmlMethodInvoker`. `src/library.rs` is a thin qtbridge
   adapter that drives the `Engine` and serializes its rows for QML. qtbridge 0.2
   has no tree-model trait, so Rust owns the hierarchy and exposes only visible
   rows (each with `depth`); expand/collapse is a slot. Do not attempt a
@@ -101,10 +123,43 @@ else without asking — every other feature so far has been reachable from Rust.
   still parses top-level blocks (byte ranges via pulldown-cmark), which nothing
   currently consumes since the editor became one surface. Qt-free and
   unit-tested; `src/note.rs` is a thin qtbridge adapter over it.
-- `booklet-core::links` — on-demand `[[..]]` scan for backlinks, scoped to a
-  single vault; `booklet_core::vault::vault_of` maps a note path to its vault.
-  Fine at personal scale; a persistent index is a later optimization, not now.
-  `src/links.rs` is a thin qtbridge adapter.
+- `booklet-core::links` — wiki-links both ways, scoped to a single vault:
+  `backlinks_to` is an on-demand `[[..]]` scan over the vault, `outgoing_links`
+  reads a note's own text and resolves each link (`target: None` = not written
+  yet). `booklet_core::vault::vault_of` maps a note path to its vault. Fine at
+  personal scale; a persistent index is a later optimization, not now.
+  `src/links.rs` is a thin qtbridge adapter; `NoteEditor.outgoing_links()`
+  serves the star map off the editor's in-memory text.
+- **`Theme.qml` owns how big the chrome draws.** Every size in the reference was
+  designed against 100%, so components write `Theme.px(13)` rather than `13` and
+  the whole interface scales from one setting (`ui_scale` in the config).
+  `Theme.gap(n)` is the room *between* things (`density`), and `Theme.row(n)` is
+  anything sized to hold type — a tree row, a tab, a button — which scales by
+  **both**, because text that grows inside a row that does not spills out of it.
+  Never write a raw pixel size for type or a row; the two knobs only work if
+  everything goes through them. Divider lines, `Icon`'s 24×24 path grid, and the
+  star map's dots are deliberately exempt.
+- **One motion vocabulary.** `Theme.quick`/`Theme.gentle` + `Theme.easing`, and
+  `Theme.radiusSmall`/`radiusCard`. Selections warm into their highlight with a
+  `Behavior on color`; menus and modals fade and scale in. Use these rather than
+  new durations, so hovering a tree row and hovering a button feel like the same
+  app.
+- **Menus are `AppMenu` + `AppMenuItem`**, never stock `Menu`/`MenuItem`: the
+  Basic style's menu is a square grey box that belongs to no theme, and the app
+  runs under Basic.
+- **Full-window modes vs modals.** The shelf (⌘L) and the vault picker are
+  full-window: the reading layout hides while one is up, and only one may be up.
+  Settings (⌘,) and the quick switcher (⌘K) are modals over it. A modal closes
+  itself, so it carries no flag in `Main.qml`.
+- `booklet-core::search` — full-text search over the active vault, on demand
+  like the backlink scan and for the same reason. It does **not** lowercase the
+  haystack and search that: lowercasing can change a string's length, so the
+  offset would not always point at the same place in the original — and the
+  snippet is cut from the original. Shares `links::snippet_around`.
+- `booklet-core::tags` — `#tag` parsing. A tag is `#` followed by a letter at a
+  word start, which is what tells it from a `# Heading`, a URL `#anchor` and a
+  `#3C5240`; code fences are skipped. Read-only: nothing indexes or filters by
+  tag yet.
 - Rust <-> QML crosses via **slots and signals with JSON payloads**. This is
   deliberate: the beta's most stable surface. Do not migrate to
   `qtbridge::QListModel` or `qproperty` without checking the current trait

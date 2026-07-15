@@ -18,6 +18,49 @@ pub struct Backlink {
     pub snippet: String,
 }
 
+/// A `[[wiki-link]]` written in a note.
+pub struct OutgoingLink {
+    pub title: String,
+    /// Where the link leads, or `None` if no note by that title exists yet.
+    pub target: Option<PathBuf>,
+}
+
+/// The `[[wiki-links]]` in `text`, in the order written, each resolved against
+/// `vault`. A title linked more than once appears once: these describe where the
+/// note points, not how often.
+pub fn outgoing_links(vault: &Path, text: &str) -> Vec<OutgoingLink> {
+    let mut links: Vec<OutgoingLink> = Vec::new();
+    let mut rest = text;
+
+    while let Some(open) = rest.find("[[") {
+        rest = &rest[open + 2..];
+
+        let Some(close) = rest.find("]]") else {
+            break;
+        };
+
+        let inner = &rest[..close];
+        rest = &rest[close + 2..];
+
+        // Stray brackets across a line break are not a link.
+        if inner.contains('\n') {
+            continue;
+        }
+
+        let title = inner.split('|').next().unwrap_or_default().trim();
+        if title.is_empty() || links.iter().any(|link| link.title == title) {
+            continue;
+        }
+
+        links.push(OutgoingLink {
+            title: title.to_string(),
+            target: crate::document::find_note(vault, title),
+        });
+    }
+
+    links
+}
+
 /// Every note within `vault` that links to `title` via `[[title]]` or
 /// `[[title|alias]]`. The target note itself is excluded — a note is not its own
 /// marginalia. A vault is self-contained (as in Obsidian), so notes in other
@@ -66,7 +109,8 @@ fn note_title(path: &Path) -> String {
 }
 
 /// A short context window around the match, ellipsized, on char boundaries.
-fn snippet_around(text: &str, position: usize) -> String {
+/// Shared with the full-text search, which cuts its snippets the same way.
+pub(crate) fn snippet_around(text: &str, position: usize) -> String {
     let mut start = position.saturating_sub(SNIPPET_BEFORE);
     while start > 0 && !text.is_char_boundary(start) {
         start -= 1;
@@ -161,6 +205,45 @@ mod tests {
         let (root, vaults) = fixture();
 
         assert!(backlinks_to(&vaults[0], "").is_empty());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn outgoing_links_resolve_within_the_vault() {
+        let (root, vaults) = fixture();
+        let text = "Read [[Target]], then [[Refers|this one]], then [[Nowhere]].";
+
+        let links = outgoing_links(&vaults[0], text);
+
+        let titles: Vec<&str> = links.iter().map(|link| link.title.as_str()).collect();
+        assert_eq!(titles, ["Target", "Refers", "Nowhere"]);
+        assert_eq!(links[0].target, Some(vaults[0].join("Target.md")));
+        assert_eq!(links[1].target, Some(vaults[0].join("Refers.md")));
+        // Unresolved: the note has not been written yet.
+        assert_eq!(links[2].target, None);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn outgoing_links_skip_repeats_and_stray_brackets() {
+        let (root, vaults) = fixture();
+        let text = "[[Target]] again [[Target]], an array a[[i]\n]j, and [[ ]].";
+
+        let links = outgoing_links(&vaults[0], text);
+
+        let titles: Vec<&str> = links.iter().map(|link| link.title.as_str()).collect();
+        assert_eq!(titles, ["Target"]);
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn a_note_without_links_points_nowhere() {
+        let (root, vaults) = fixture();
+
+        assert!(outgoing_links(&vaults[0], "# Plain\n\nNo links here.").is_empty());
 
         std::fs::remove_dir_all(&root).unwrap();
     }

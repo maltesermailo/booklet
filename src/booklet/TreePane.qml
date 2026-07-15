@@ -143,7 +143,7 @@ Rectangle {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: 36
+        height: Theme.row(36)
 
         Row {
             anchors.left: parent.left
@@ -216,10 +216,14 @@ Rectangle {
             readonly property bool editing: placeholder || renaming
 
             width: ListView.view ? ListView.view.width : 0
-            height: 24
-            radius: 4
+            height: Theme.row(24)
+            radius: Theme.radiusSmall
             color: modelData.id === pane.currentId && !rowItem.editing ? Theme.activePill
                  : hover.hovered ? Qt.rgba(1, 1, 1, 0.03) : "transparent"
+
+            Behavior on color {
+                ColorAnimation { duration: Theme.quick; easing.type: Theme.easing }
+            }
 
             HoverHandler { id: hover }
 
@@ -247,7 +251,7 @@ Rectangle {
                     visible: modelData.has_children
                     text: modelData.expanded ? "▾" : "▸"
                     color: Theme.textDim
-                    font.pixelSize: 10
+                    font.pixelSize: Theme.px(10)
                     anchors.verticalCenter: parent.verticalCenter
                 }
                 Rectangle { // binding chip, books only
@@ -265,7 +269,7 @@ Rectangle {
                          : modelData.kind === "note" ? Theme.textSoft
                          : Theme.text
                     font.family: Theme.ui
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.px(13)
                     font.weight: modelData.kind === "book" ? Font.Medium : Font.Normal
                     elide: Text.ElideRight
                 }
@@ -278,12 +282,12 @@ Rectangle {
                 anchors.verticalCenter: parent.verticalCenter
                 x: 8 + modelData.depth * 13 + 14
                 width: Math.max(40, parent.width - x - 6)
-                height: 21
+                height: Theme.row(21)
                 padding: 3
                 text: rowItem.placeholder ? "" : modelData.title
                 color: Theme.textBright
                 font.family: Theme.ui
-                font.pixelSize: 13
+                font.pixelSize: Theme.px(13)
                 selectByMouse: true
 
                 background: Rectangle {
@@ -318,6 +322,7 @@ Rectangle {
                     if (mouse.button === Qt.RightButton) {
                         rowMenu.targetId = modelData.id
                         rowMenu.targetTitle = modelData.title
+                        rowMenu.targetKind = modelData.kind
                         rowMenu.popup()
                         return
                     }
@@ -330,16 +335,29 @@ Rectangle {
         }
     }
 
-    Menu {
+    AppMenu {
         id: rowMenu
         property string targetId: ""
         property string targetTitle: ""
+        property string targetKind: ""
 
-        MenuItem { text: "New note"; onTriggered: pane.startCreate("note") }
-        MenuItem { text: "New section"; onTriggered: pane.startCreate("section") }
-        MenuSeparator {}
-        MenuItem { text: "Rename…"; onTriggered: pane.startRename(rowMenu.targetId) }
-        MenuItem {
+        AppMenuItem { text: "New note"; onTriggered: pane.startCreate("note") }
+        AppMenuItem { text: "New section"; onTriggered: pane.startCreate("section") }
+        MenuSeparator {
+            contentItem: Rectangle {
+                implicitHeight: 1
+                color: Theme.pageLine
+            }
+        }
+        AppMenuItem { text: "Rename…"; onTriggered: pane.startRename(rowMenu.targetId) }
+        // Only a book has a binding: sections and notes are not bound.
+        AppMenuItem {
+            text: "Binding…"
+            height: visible ? implicitHeight : 0
+            visible: rowMenu.targetKind === "book"
+            onTriggered: bindingDialog.openFor(rowMenu.targetId)
+        }
+        AppMenuItem {
             text: "Delete…"
             onTriggered: {
                 deleteDialog.targetId = rowMenu.targetId
@@ -348,6 +366,8 @@ Rectangle {
             }
         }
     }
+
+    BindingDialog { id: bindingDialog }
 
     MessageDialog {
         id: deleteDialog

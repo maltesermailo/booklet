@@ -56,7 +56,7 @@ Rectangle {
         text: notice.message
         color: Theme.text
         font.family: Theme.ui
-        font.pixelSize: 12
+        font.pixelSize: Theme.px(12)
         elide: Text.ElideRight
     }
 
@@ -76,7 +76,7 @@ Rectangle {
             anchors.centerIn: parent
             text: "×"
             color: dismissHover.hovered ? Theme.textBright : Theme.textDim
-            font.pixelSize: 13
+            font.pixelSize: Theme.px(13)
         }
 
         MouseArea {

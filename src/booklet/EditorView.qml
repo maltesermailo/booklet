@@ -71,8 +71,13 @@ Rectangle {
         function onFont_size_changed() { view.reloadFontSize() }
     }
 
-    // Plain clicks belong to the editor, so links are followed with ⌘+click —
-    // Qt maps ⌘ to ControlModifier on macOS.
+    // Which line a position falls on. Only ever called on a click, so counting
+    // the newlines before it is cheap enough.
+    function lineOf(position) {
+        return editor.text.substring(0, position).split("\n").length - 1
+    }
+
+    // The title of the [[wiki-link]] `position` falls inside, or "".
     function linkAt(position) {
         var text = editor.text
         var open = text.lastIndexOf("[[", position)
@@ -180,8 +185,8 @@ Rectangle {
                     }
                     color: Theme.textSoft
                     font.family: Theme.ui
-                    font.pixelSize: 11
-                    font.letterSpacing: 1.5
+                    font.pixelSize: Theme.px(11)
+                    font.letterSpacing: 1.5 * Theme.uiScale
                 }
 
                 // Preview | Source. Source turns the highlighter off, leaving the
@@ -215,7 +220,7 @@ Rectangle {
                                 text: modelData
                                 color: parent.on ? Theme.page : Theme.textSoft
                                 font.family: Theme.ui
-                                font.pixelSize: 11
+                                font.pixelSize: Theme.px(11)
                             }
 
                             MouseArea {
@@ -274,9 +279,43 @@ Rectangle {
                         headingPixelSize: view.headingSize
                     }
 
+                    // A link on a line you are not editing is rendered text —
+                    // its markers are collapsed — so clicking it follows it, as
+                    // Obsidian does. On the line holding the caret the markers
+                    // are showing, you are editing the source, and the click
+                    // belongs to the caret.
                     TapHandler {
-                        // Only fires with ⌘ held, so ordinary clicks still place
-                        // the caret.
+                        id: linkTap
+                        acceptedModifiers: Qt.NoModifier
+
+                        // The caret as it was *before* this click: the editor
+                        // moves it to the click on press, so by the time the tap
+                        // completes every click looks like it landed on the
+                        // caret's own line. Handlers see the press first, which
+                        // is what makes this the line you were editing.
+                        property int caretLineOnPress: -1
+
+                        onPressedChanged: {
+                            // No focus means no line is being edited, so a first
+                            // click into the note still follows a link.
+                            linkTap.caretLineOnPress =
+                                editor.activeFocus ? view.lineOf(editor.cursorPosition) : -1
+                        }
+
+                        onTapped: (point) => {
+                            var at = editor.positionAt(point.position.x, point.position.y)
+                            if (view.lineOf(at) === linkTap.caretLineOnPress)
+                                return
+
+                            var title = view.linkAt(at)
+                            if (title !== "")
+                                NoteEditor.open_by_title(title)
+                        }
+                    }
+
+                    // ⌘+click follows a link even on the line you are editing,
+                    // where a plain click has to stay the caret's.
+                    TapHandler {
                         acceptedModifiers: Qt.ControlModifier
                         onTapped: (point) => {
                             var at = editor.positionAt(point.position.x, point.position.y)
@@ -296,6 +335,6 @@ Rectangle {
         text: "Choose a note from the index"
         color: Theme.textDim
         font.family: Theme.display
-        font.pixelSize: 18
+        font.pixelSize: Theme.px(18)
     }
 }

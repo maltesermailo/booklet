@@ -6,7 +6,7 @@ import booklet
 Rectangle {
     id: bar
 
-    height: 22
+    height: Theme.row(22)
     color: Theme.sidebar
 
     property string vaultName: ""
@@ -52,7 +52,7 @@ Rectangle {
               : bar.vaultName + " · " + bar.noteCount + (bar.noteCount === 1 ? " note" : " notes")
         color: Theme.textSoft
         font.family: Theme.ui
-        font.pixelSize: 11
+        font.pixelSize: Theme.px(11)
     }
 
     // Saving is debounced and silent, so the state has to be visible somewhere.
@@ -76,7 +76,7 @@ Rectangle {
             text: bar.unsaved ? "unsaved" : "saved"
             color: bar.unsaved ? Theme.text : Theme.textSoft
             font.family: Theme.ui
-            font.pixelSize: 11
+            font.pixelSize: Theme.px(11)
         }
     }
 }

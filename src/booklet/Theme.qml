@@ -1,5 +1,6 @@
 pragma Singleton
 import QtQuick
+import booklet
 
 // Two themes sharing one token vocabulary. Components only ever read the
 // flat aliases at the bottom, so adding a theme means adding one palette
@@ -7,11 +8,56 @@ import QtQuick
 //   "night" — warm near-black reading room, brass foil, ember links
 //   "atlas" — Celestial Atlas: void blue-black, starlight ink, gilt
 //             accents, comet-teal links
+//
+// It also owns how big the chrome draws. Every size in the reference is a
+// number designed against 100%, so components write `Theme.px(13)` rather than
+// `13` and the whole interface scales from one setting. `px` is for type and
+// fixed furniture, `gap` for the room between things — they are separate
+// because "I want bigger text" and "I want it less cramped" are separate
+// wishes.
 QtObject {
     id: theme
 
-    // Toggle at runtime with Ctrl+T (see Main.qml).
+    // Set from the persisted settings (see Main.qml); Settings changes them.
     property string mode: "night"
+    property real uiScale: 1
+    property real density: 1
+
+    // Rounded to whole pixels: font.pixelSize is an int, and a half-pixel
+    // border draws blurred.
+    function px(size) {
+        return Math.max(1, Math.round(size * theme.uiScale))
+    }
+    function gap(space) {
+        return Math.max(0, Math.round(space * theme.density))
+    }
+    // Anything sized to hold type: a tree row, a tab, a button. It has to grow
+    // with the text or the text spills out of it, and density is then the room
+    // it keeps around that text.
+    function row(height) {
+        return Math.round(height * theme.uiScale * theme.density)
+    }
+
+    // The house motion. One duration and one easing everywhere, so hovering a
+    // tree row and hovering a button feel like the same app.
+    readonly property int quick: 110
+    readonly property int gentle: 180
+    readonly property int easing: Easing.OutCubic
+
+    // Corner radius, one vocabulary: pills for rows and buttons, cards for
+    // panels and menus.
+    readonly property int radiusSmall: 5
+    readonly property int radiusCard: 8
+
+    function reloadChrome() {
+        theme.uiScale = Library.ui_scale() / 100
+        theme.density = Library.density() / 100
+    }
+
+    readonly property Connections chromeWatch: Connections {
+        target: Library
+        function onChrome_changed() { theme.reloadChrome() }
+    }
 
     readonly property QtObject night: QtObject {
         readonly property color bg:          "#171512"

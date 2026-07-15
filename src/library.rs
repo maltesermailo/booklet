@@ -10,6 +10,10 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use qtbridge::{qobject, QObjectHolder};
 use std::path::{Path, PathBuf};
 
+/// What a fresh vault is seeded with, so quick start lands somewhere to write.
+const STARTER_BOOK: &str = "First Book";
+const STARTER_NOTE: &str = "Welcome";
+
 pub struct Library {
     engine: Engine,
     /// Kept alive to keep watching; replacing it drops the previous watches.
@@ -36,6 +40,10 @@ impl Library {
 
         self.watch_vaults();
         self.tree_changed();
+        // Until this runs these are still the defaults; anything already on
+        // screen has to be told what was configured.
+        self.font_size_changed();
+        self.chrome_changed();
     }
 
     #[qslot]
@@ -100,6 +108,39 @@ impl Library {
         serde_json::to_string(&self.engine.vaults()).expect("vaults serialize to JSON")
     }
 
+    /// The vaults for the picker: most recently opened first, capped. Same list
+    /// as `vaults()`, in the order the picker wants it.
+    #[qslot]
+    fn recent_vaults(&self) -> String {
+        serde_json::to_string(&self.engine.recent_vaults()).expect("vaults serialize to JSON")
+    }
+
+    /// Creates a vault at `path`, seeded with one book and one note, and opens
+    /// it. The picker's quick start.
+    #[qslot]
+    fn create_vault(&mut self, path: String) {
+        if let Err(error) =
+            self.engine.create_vault(PathBuf::from(path), STARTER_BOOK, STARTER_NOTE)
+        {
+            self.failed(format!("Could not create the vault: {error}"));
+        }
+
+        self.watch_vaults();
+        self.tree_changed();
+    }
+
+    /// Where quick start puts a vault when the user has not chosen anywhere.
+    #[qslot]
+    fn default_vault_path(&self) -> String {
+        home_dir().join("Documents/Booklet").to_string_lossy().into_owned()
+    }
+
+    /// The app's version, for the picker.
+    #[qslot]
+    fn version(&self) -> String {
+        env!("CARGO_PKG_VERSION").to_string()
+    }
+
     /// The vault currently being read, or "" if none.
     #[qslot]
     fn active_vault(&self) -> String {
@@ -128,6 +169,91 @@ impl Library {
     /// The reading size changed; the editor re-reads it.
     #[qsignal]
     fn font_size_changed(&mut self);
+
+    /// Which theme the UI wears, remembered across restarts. The engine keeps
+    /// the name without judging it; Theme.qml knows what the names mean.
+    #[qslot]
+    fn theme(&self) -> String {
+        self.engine.theme().to_string()
+    }
+
+    #[qslot]
+    fn set_theme(&mut self, name: String) {
+        if let Err(error) = self.engine.set_theme(&name) {
+            self.failed(format!("Could not save the theme: {error}"));
+        }
+    }
+
+    /// How large the chrome draws, as a percentage of the designed size.
+    #[qslot]
+    fn ui_scale(&self) -> i32 {
+        self.engine.ui_scale() as i32
+    }
+
+    #[qslot]
+    fn set_ui_scale(&mut self, scale: i32) {
+        if let Err(error) = self.engine.set_ui_scale(scale.max(0) as u32) {
+            self.failed(format!("Could not save the interface size: {error}"));
+        }
+
+        self.chrome_changed();
+    }
+
+    /// How much room the chrome gives itself, as a percentage.
+    #[qslot]
+    fn density(&self) -> i32 {
+        self.engine.density() as i32
+    }
+
+    #[qslot]
+    fn set_density(&mut self, density: i32) {
+        if let Err(error) = self.engine.set_density(density.max(0) as u32) {
+            self.failed(format!("Could not save the density: {error}"));
+        }
+
+        self.chrome_changed();
+    }
+
+    /// The chrome's size or density changed; Theme re-reads both.
+    #[qsignal]
+    fn chrome_changed(&mut self);
+
+    /// Where the configuration is kept, so the settings screen can say.
+    #[qslot]
+    fn config_path(&self) -> String {
+        default_config_path().to_string_lossy().into_owned()
+    }
+
+    /// Sets a book's binding: the colour of its spine and the shelf it stands
+    /// on. Written to the book's own booklet.json.
+    #[qslot]
+    fn set_binding(&mut self, book_id: String, color: String, shelf: String) {
+        if let Err(error) = self.engine.set_binding(Path::new(&book_id), &color, &shelf) {
+            self.failed(format!("Could not save the binding: {error}"));
+        }
+
+        self.tree_changed();
+    }
+
+    /// Notes in the active vault whose text contains `query`. The switcher
+    /// matches titles itself; this is what reaches into the writing.
+    #[qslot]
+    fn search(&self, query: String) -> String {
+        let rows: Vec<serde_json::Value> = self
+            .engine
+            .search(&query)
+            .into_iter()
+            .map(|hit| {
+                serde_json::json!({
+                    "id": hit.path.to_string_lossy(),
+                    "title": hit.title,
+                    "snippet": hit.snippet,
+                })
+            })
+            .collect();
+
+        serde_json::to_string(&rows).expect("search hits serialize to JSON")
+    }
 
     /// Switches which vault is being read.
     #[qslot]
@@ -268,6 +394,9 @@ pub(crate) fn default_config_path() -> PathBuf {
         return PathBuf::from(override_path);
     }
 
-    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
-    home.join(".config/booklet/vaults.json")
+    home_dir().join(".config/booklet/vaults.json")
+}
+
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default()
 }

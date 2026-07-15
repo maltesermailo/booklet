@@ -28,7 +28,7 @@ impl Backlinks {
     #[qslot]
     fn load(&mut self) {
         self.vaults = match config::load(&crate::library::default_config_path()) {
-            Ok(config) => config.vaults,
+            Ok(config) => config.vault_paths(),
             Err(error) => {
                 self.failed(format!("Could not read vault list: {error}"));
                 Vec::new()

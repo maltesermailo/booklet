@@ -7,7 +7,7 @@
 //! deals in blocks.
 
 use booklet_core::document::{self, Document};
-use booklet_core::{config, vault};
+use booklet_core::{config, links, tags, vault};
 use qtbridge::qobject;
 use std::path::{Path, PathBuf};
 
@@ -27,7 +27,7 @@ impl NoteEditor {
     #[qslot]
     fn load(&mut self) {
         self.vaults = match config::load(&crate::library::default_config_path()) {
-            Ok(config) => config.vaults,
+            Ok(config) => config.vault_paths(),
             Err(error) => {
                 self.failed(format!("Could not read vault list: {error}"));
                 Vec::new()
@@ -128,6 +128,40 @@ impl NoteEditor {
         let modified = document.modified().map(|seconds| seconds as f64).unwrap_or(-1.0);
 
         serde_json::json!({ "section": section, "modified": modified }).to_string()
+    }
+
+    /// The `[[wiki-links]]` this note points at, each with the id to open and
+    /// whether a note by that title exists. Read from the editor's text rather
+    /// than the disk, so the star map keeps up with what has been typed.
+    #[qslot]
+    fn outgoing_links(&self) -> String {
+        let links = match (self.document.as_ref(), self.current_vault()) {
+            (Some(document), Some(vault)) => links::outgoing_links(vault, document.source()),
+            _ => Vec::new(),
+        };
+
+        let rows: Vec<serde_json::Value> = links
+            .into_iter()
+            .map(|link| {
+                serde_json::json!({
+                    "title": link.title,
+                    // "" for an unresolved link: there is no note to open yet,
+                    // so QML creates it by title instead.
+                    "id": link.target.map(|path| path.to_string_lossy().into_owned())
+                        .unwrap_or_default(),
+                })
+            })
+            .collect();
+
+        serde_json::to_string(&rows).expect("outgoing links serialize to JSON")
+    }
+
+    /// The `#tags` written in this note.
+    #[qslot]
+    fn tags(&self) -> String {
+        let found = self.document.as_ref().map(|document| tags::tags_in(document.source()));
+
+        serde_json::to_string(&found.unwrap_or_default()).expect("tags serialize to JSON")
     }
 
     /// The open note's markdown. The editor is one surface over the whole note,

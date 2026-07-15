@@ -38,8 +38,18 @@ fn main() {
     qtbridge::include_bytes_qml!("booklet/TreePane.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/EditorView.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/Marginalia.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/StarMap.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/QuickSwitcher.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/ShelfView.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/SettingsView.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/SettingsPane.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/SettingSlider.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/VaultPicker.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/ActionRow.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/BindingDialog.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/TextButton.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/AppMenu.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/AppMenuItem.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/TopBar.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/StatusBar.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/Notice.qml", "qt/qml");

@@ -1,6 +1,5 @@
 import QtQuick
 import QtQuick.Controls
-import QtQuick.Dialogs
 import booklet
 
 // The reference's topbar. One vault is read at a time; the menu switches it and
@@ -8,7 +7,7 @@ import booklet
 Rectangle {
     id: bar
 
-    height: 38
+    height: Theme.row(38)
     color: Theme.sidebar
 
     property var vaults: []
@@ -21,6 +20,8 @@ Rectangle {
     property bool marginaliaHidden: false
     signal showSidebar()
     signal showMarginalia()
+    signal openSettings()
+    signal openPicker()
 
     property bool canGoBack: false
     property bool canGoForward: false
@@ -33,16 +34,13 @@ Rectangle {
     // Same 24×24 grid as the reference's icons; the divider says which side.
     readonly property string sidebarIcon: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M9 4v16"
     readonly property string marginaliaIcon: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M15 4v16"
+    // A gear: the ring, plus eight teeth spoked around it.
+    readonly property string settingsIcon: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z M12 2.6v2.6 M12 18.8v2.6 M5.4 5.4l1.9 1.9 M16.7 16.7l1.9 1.9 M2.6 12h2.6 M18.8 12h2.6 M5.4 18.6l1.9-1.9 M16.7 7.3l1.9-1.9"
 
     function reload() {
         bar.vaults = JSON.parse(Library.vaults())
         var active = bar.vaults.find(function (vault) { return vault.active })
         bar.activeName = active ? active.name : "No vault"
-    }
-
-    // FolderDialog hands back a file:// url; the engine wants a plain path.
-    function urlToPath(url) {
-        return decodeURIComponent(url.toString().replace(/^file:\/\//, ""))
     }
 
     Component.onCompleted: reload()
@@ -83,7 +81,7 @@ Rectangle {
             text: "Booklet"
             color: Theme.brass
             font.family: Theme.display
-            font.pixelSize: 17
+            font.pixelSize: Theme.px(17)
         }
 
         // Following a link takes you away from where you were.
@@ -109,7 +107,7 @@ Rectangle {
             id: vaultButton
             anchors.verticalCenter: parent.verticalCenter
             width: vaultLabel.width + 22
-            height: 24
+            height: Theme.row(24)
             radius: 5
             color: vaultHover.hovered ? Theme.activePill : "transparent"
 
@@ -128,13 +126,13 @@ Rectangle {
                     text: bar.activeName
                     color: Theme.text
                     font.family: Theme.ui
-                    font.pixelSize: 13
+                    font.pixelSize: Theme.px(13)
                 }
                 Text {
                     anchors.verticalCenter: parent.verticalCenter
                     text: "▾"
                     color: Theme.textDim
-                    font.pixelSize: 9
+                    font.pixelSize: Theme.px(9)
                 }
             }
 
@@ -162,14 +160,14 @@ Rectangle {
                         text: index > 0 ? " / " : ""
                         color: Theme.textDim
                         font.family: Theme.ui
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.px(13)
                     }
                     Text {
                         readonly property bool last: index === bar.crumbs.length - 1
                         text: modelData
                         color: last ? Theme.textBright : Theme.textSoft
                         font.family: Theme.ui
-                        font.pixelSize: 13
+                        font.pixelSize: Theme.px(13)
                         font.weight: last ? Font.Medium : Font.Normal
                     }
                 }
@@ -191,10 +189,17 @@ Rectangle {
             onClicked: bar.showMarginalia()
         }
 
+        IconButton {
+            anchors.verticalCenter: parent.verticalCenter
+            path: bar.settingsIcon
+            tip: "Settings (⌘,)"
+            onClicked: bar.openSettings()
+        }
+
         Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             width: kbdHint.implicitWidth + 12
-            height: 17
+            height: Theme.row(17)
             radius: 4
             color: "transparent"
             border.color: Theme.pageLine
@@ -206,7 +211,7 @@ Rectangle {
                 text: "⌘K"
                 color: Theme.textSoft
                 font.family: Theme.mono
-                font.pixelSize: 11
+                font.pixelSize: Theme.px(11)
             }
         }
 
@@ -233,17 +238,17 @@ Rectangle {
                 text: "offline"
                 color: Theme.textSoft
                 font.family: Theme.ui
-                font.pixelSize: 12
+                font.pixelSize: Theme.px(12)
             }
         }
     }
 
-    Menu {
+    AppMenu {
         id: vaultMenu
 
         Instantiator {
             model: bar.vaults
-            delegate: MenuItem {
+            delegate: AppMenuItem {
                 required property var modelData
                 text: (modelData.active ? "● " : "    ") + modelData.name
                 onTriggered: Library.set_active(modelData.id)
@@ -252,13 +257,18 @@ Rectangle {
             onObjectRemoved: (index, object) => vaultMenu.removeItem(object)
         }
 
-        MenuSeparator {}
-
-        MenuItem {
-            text: "Add vault…"
-            onTriggered: vaultPicker.open()
+        MenuSeparator {
+            contentItem: Rectangle {
+                implicitHeight: 1
+                color: Theme.pageLine
+            }
         }
-        MenuItem {
+
+        AppMenuItem {
+            text: "Open another vault…"
+            onTriggered: bar.openPicker()
+        }
+        AppMenuItem {
             text: bar.vaults.length > 0 ? "Remove " + bar.activeName : "Remove vault"
             enabled: bar.vaults.length > 0
             // Removes it from the library only; the files on disk are untouched.
@@ -266,9 +276,4 @@ Rectangle {
         }
     }
 
-    FolderDialog {
-        id: vaultPicker
-        title: "Choose a vault folder"
-        onAccepted: Library.add_vault(bar.urlToPath(selectedFolder))
-    }
 }

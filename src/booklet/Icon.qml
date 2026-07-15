@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Shapes
+import booklet
 
 // A stroked icon from the reference: SVG path data drawn on a 24×24 grid.
 // Scaling the shape scales the stroke with it, which is exactly what the
@@ -9,7 +10,7 @@ Item {
 
     property string path: ""
     property color stroke: "white"
-    property int size: 15
+    property int size: Theme.px(15)
 
     implicitWidth: size
     implicitHeight: size

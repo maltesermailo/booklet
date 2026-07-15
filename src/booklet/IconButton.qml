@@ -11,11 +11,18 @@ Rectangle {
     property string tip: ""
     signal clicked()
 
-    width: 26
-    height: 26
-    radius: 5
+    width: Theme.row(26)
+    height: Theme.row(26)
+    radius: Theme.radiusSmall
     color: hover.hovered && button.enabled ? Theme.activePill : "transparent"
     opacity: button.enabled ? 1 : 0.35
+
+    Behavior on color {
+        ColorAnimation { duration: Theme.quick; easing.type: Theme.easing }
+    }
+    Behavior on opacity {
+        NumberAnimation { duration: Theme.quick; easing.type: Theme.easing }
+    }
 
     HoverHandler {
         id: hover

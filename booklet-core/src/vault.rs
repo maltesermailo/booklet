@@ -12,6 +12,13 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_COLOR: &str = "#4A5560";
+
+/// The binding palette. Books take a colour from it by hand; a vault is given
+/// the first one going spare when it is added, so the picker's dots differ.
+/// Theme.qml carries the same list for the book binding chips — QML cannot read
+/// a Rust const, so the two are kept in step by hand.
+pub const BINDING_PALETTE: [&str; 6] =
+    ["#7C3128", "#2F3E5C", "#3C5240", "#A8842C", "#55364F", "#4A5560"];
 const DEFAULT_SHELF: &str = "Library";
 const BOOK_METADATA_FILE: &str = "booklet.json";
 
@@ -34,6 +41,9 @@ pub struct VaultInfo {
     pub id: String, // absolute path
     pub name: String,
     pub active: bool,
+    pub color: String,
+    /// Epoch milliseconds; 0 means it has never been opened.
+    pub last_opened: u64,
 }
 
 /// A note's entry in the quick switcher.
@@ -116,16 +126,37 @@ pub trait Folder {
     }
 }
 
-/// One configured library location; its children are books.
+/// One configured library location; its children are books. It also carries
+/// what the picker needs to list it: the colour of its dot and when it was last
+/// opened.
 pub struct Vault {
     path: PathBuf,
+    color: String,
+    /// Epoch milliseconds; 0 means never.
+    last_opened: u64,
     expanded: bool,
     books: Vec<Node>,
 }
 
 impl Vault {
     pub fn new(path: PathBuf) -> Self {
-        Self { path, expanded: false, books: Vec::new() }
+        Self { path, color: String::new(), last_opened: 0, expanded: false, books: Vec::new() }
+    }
+
+    pub fn color(&self) -> &str {
+        &self.color
+    }
+
+    pub fn set_color(&mut self, color: String) {
+        self.color = color;
+    }
+
+    pub fn last_opened(&self) -> u64 {
+        self.last_opened
+    }
+
+    pub fn set_last_opened(&mut self, seconds: u64) {
+        self.last_opened = seconds;
     }
 
     /// The vault's folder name, as shown in the vault menu.
@@ -347,6 +378,30 @@ impl Binding {
                 shelf: DEFAULT_SHELF.into(),
             },
         }
+    }
+
+    /// Writes the binding into the book's booklet.json, keeping whatever else
+    /// the file holds: it is a plain file in the user's vault, and they may have
+    /// put their own keys in it.
+    pub fn write(book_dir: &Path, color: &str, shelf: &str) -> std::io::Result<()> {
+        let path = book_dir.join(BOOK_METADATA_FILE);
+        let existing: Option<serde_json::Value> =
+            std::fs::read_to_string(&path).ok().and_then(|text| serde_json::from_str(&text).ok());
+
+        // Anything that is not an object (or is unreadable) is replaced rather
+        // than indexed into, which would panic.
+        let mut metadata = match existing {
+            Some(value) if value.is_object() => value,
+            _ => serde_json::json!({}),
+        };
+
+        metadata["color"] = color.into();
+        metadata["shelf"] = shelf.into();
+
+        // A map of strings, so serialization cannot fail.
+        let text = serde_json::to_string_pretty(&metadata).expect("binding serializes to JSON");
+
+        std::fs::write(&path, text)
     }
 }
 
