@@ -17,6 +17,59 @@ Rectangle {
     // Loading a note assigns `text`, which fires onTextChanged; without this
     // the editor would schedule a save of what it just read back.
     property bool loading: false
+    // Live preview off = the markdown as written, unstyled.
+    property bool livePreview: true
+
+    // Which [[links]] resolve. Kept in step with the vault so a link broken by
+    // a rename shows as unresolved.
+    property var knownTitles: []
+    property string section: ""
+    property real modified: -1
+
+    // Reading size, persisted. Headings keep the reference's ratio to it
+    // (24 against a 15px body).
+    property int fontSize: 18
+    readonly property int headingSize: Math.round(fontSize * 1.6)
+
+    function reloadTitles() {
+        var notes = JSON.parse(Library.notes())
+        var titles = []
+        for (var i = 0; i < notes.length; i++)
+            titles.push(notes[i].title)
+        view.knownTitles = titles
+    }
+
+    // "EDITED TODAY", as the reference words it.
+    function editedWhen(epochSeconds) {
+        if (epochSeconds < 0)
+            return ""
+
+        var then = new Date(epochSeconds * 1000)
+        var days = Math.floor((new Date().setHours(0, 0, 0, 0) - new Date(epochSeconds * 1000).setHours(0, 0, 0, 0))
+                              / 86400000)
+        if (days <= 0)
+            return "EDITED TODAY"
+        if (days === 1)
+            return "EDITED YESTERDAY"
+        if (days < 7)
+            return "EDITED " + days + " DAYS AGO"
+        return "EDITED " + then.toLocaleDateString(Qt.locale(), "d MMM yyyy").toUpperCase()
+    }
+
+    function reloadFontSize() {
+        view.fontSize = Library.editor_font_size()
+    }
+
+    Component.onCompleted: {
+        reloadTitles()
+        reloadFontSize()
+    }
+
+    Connections {
+        target: Library
+        function onTree_changed() { view.reloadTitles() }
+        function onFont_size_changed() { view.reloadFontSize() }
+    }
 
     // Plain clicks belong to the editor, so links are followed with ⌘+click —
     // Qt maps ⌘ to ControlModifier on macOS.
@@ -49,6 +102,17 @@ Rectangle {
             view.loading = true
             editor.text = NoteEditor.source()
             view.loading = false
+
+            var meta = JSON.parse(NoteEditor.meta())
+            view.section = meta.section !== undefined ? meta.section : ""
+            view.modified = meta.modified !== undefined ? meta.modified : -1
+        }
+        // Writing the note moves its timestamp.
+        function onSave_state_changed(unsaved) {
+            if (!unsaved) {
+                var meta = JSON.parse(NoteEditor.meta())
+                view.modified = meta.modified !== undefined ? meta.modified : -1
+            }
         }
     }
 
@@ -101,10 +165,72 @@ Rectangle {
                     }
                 }
 
+                // "● PIXEL 7 · EDITED TODAY" — where this note sits and when it
+                // last changed.
+                Text {
+                    id: meta
+                    x: 34
+                    y: 22
+                    visible: view.hasNote && text !== ""
+                    text: {
+                        var when = view.editedWhen(view.modified)
+                        if (view.section === "")
+                            return when
+                        return "● " + view.section.toUpperCase() + (when === "" ? "" : " · " + when)
+                    }
+                    color: Theme.textSoft
+                    font.family: Theme.ui
+                    font.pixelSize: 11
+                    font.letterSpacing: 1.5
+                }
+
+                // Preview | Source. Source turns the highlighter off, leaving the
+                // markdown exactly as written.
+                Row {
+                    anchors.top: parent.top
+                    anchors.right: parent.right
+                    anchors.topMargin: 12
+                    anchors.rightMargin: 12
+                    visible: view.hasNote
+                    spacing: 0
+
+                    Repeater {
+                        model: ["Preview", "Source"]
+
+                        delegate: Rectangle {
+                            required property string modelData
+                            required property int index
+
+                            readonly property bool on: (index === 0) === view.livePreview
+
+                            width: label.implicitWidth + 18
+                            height: 18
+                            color: on ? Theme.brass : "transparent"
+                            border.color: Theme.pageLine
+                            border.width: 1
+
+                            Text {
+                                id: label
+                                anchors.centerIn: parent
+                                text: modelData
+                                color: parent.on ? Theme.page : Theme.textSoft
+                                font.family: Theme.ui
+                                font.pixelSize: 11
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: view.livePreview = (index === 0)
+                            }
+                        }
+                    }
+                }
+
                 TextArea {
                     id: editor
                     x: 34
-                    y: 22
+                    y: meta.visible ? meta.y + meta.height + 8 : 22
                     width: page.width - 60 // 34 left, 26 right
                     // Fill the sheet even when the note is short, so clicking
                     // the blank paper below the text lands in the editor and
@@ -116,8 +242,8 @@ Rectangle {
                     selectByMouse: true
                     color: Theme.text
                     selectionColor: Theme.brassDeep
-                    font.family: Theme.body
-                    font.pixelSize: 15
+                    font.family: view.livePreview ? Theme.body : Theme.mono
+                    font.pixelSize: view.livePreview ? view.fontSize : Math.round(view.fontSize * 0.87)
                     background: null // the page is the background
 
                     onTextChanged: {
@@ -135,13 +261,17 @@ Rectangle {
                     }
 
                     MarkdownHighlighter {
-                        document: editor.textDocument
+                        // Detaching from the document is what "Source" means:
+                        // no styling, no hidden markers, just the markdown.
+                        document: view.livePreview ? editor.textDocument : null
                         cursorPosition: editor.cursorPosition
+                        knownTitles: view.knownTitles
                         markerColor: Theme.textDim
                         textColor: Theme.textBright
                         linkColor: Theme.ember
+                        unresolvedColor: Theme.textSoft
                         headingFamily: Theme.display
-                        headingPixelSize: 24
+                        headingPixelSize: view.headingSize
                     }
 
                     TapHandler {

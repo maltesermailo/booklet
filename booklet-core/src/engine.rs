@@ -12,25 +12,40 @@ use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Reading size for the editor, in pixels, and the range the UI may set.
+pub const DEFAULT_FONT_SIZE: u32 = 18;
+pub const MIN_FONT_SIZE: u32 = 11;
+pub const MAX_FONT_SIZE: u32 = 40;
+
 pub struct Engine {
     config_path: PathBuf,
     vaults: Vec<Vault>,
     /// The vault being read. Its books are the tree's roots; the others are kept
     /// so their open folders survive a switch, but they are never rendered.
     active: Option<PathBuf>,
+    editor_font_size: u32,
 }
 
 impl Engine {
     /// Creates an engine that persists to `config_path`. The caller chooses the
     /// location, so different apps or profiles can reuse the engine.
     pub fn new(config_path: PathBuf) -> Self {
-        Self { config_path, vaults: Vec::new(), active: None }
+        Self {
+            config_path,
+            vaults: Vec::new(),
+            active: None,
+            editor_font_size: DEFAULT_FONT_SIZE,
+        }
     }
 
     /// Loads the persisted vaults and reopens the folders that were expanded.
     pub fn load(&mut self) -> io::Result<()> {
         let config = config::load(&self.config_path)?;
         let expanded: HashSet<PathBuf> = config.expanded.into_iter().collect();
+        self.editor_font_size = config
+            .editor_font_size
+            .map(|size| size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE))
+            .unwrap_or(DEFAULT_FONT_SIZE);
 
         // Fall back to the first vault if the stored active one is gone.
         self.active = config
@@ -218,6 +233,22 @@ impl Engine {
         self.persist()
     }
 
+    /// Reading size for the editor, in pixels.
+    pub fn editor_font_size(&self) -> u32 {
+        self.editor_font_size
+    }
+
+    /// Sets the reading size, clamped to something usable, and persists.
+    pub fn set_editor_font_size(&mut self, size: u32) -> io::Result<()> {
+        let size = size.clamp(MIN_FONT_SIZE, MAX_FONT_SIZE);
+        if size == self.editor_font_size {
+            return Ok(());
+        }
+
+        self.editor_font_size = size;
+        self.persist()
+    }
+
     /// The configured vault paths.
     pub fn vault_paths(&self) -> Vec<PathBuf> {
         self.vaults.iter().map(|vault| vault.path().to_path_buf()).collect()
@@ -282,8 +313,12 @@ impl Engine {
         let mut expanded: Vec<PathBuf> = self.collect_expanded().into_iter().collect();
         expanded.sort();
 
-        let config =
-            Config { vaults: self.vault_paths(), active: self.active.clone(), expanded };
+        let config = Config {
+            vaults: self.vault_paths(),
+            active: self.active.clone(),
+            expanded,
+            editor_font_size: Some(self.editor_font_size),
+        };
         config::save(&self.config_path, &config)
     }
 }
@@ -678,6 +713,31 @@ mod tests {
 
         assert!(!book.join("Top Note.md").exists());
         assert!(!titles(&engine).contains(&"Top Note".to_string()));
+
+        cleanup(&config_path);
+    }
+
+    #[test]
+    fn editor_font_size_is_clamped_and_persists() {
+        let (config_path, vault) = fixture();
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(vault).unwrap();
+
+        assert_eq!(engine.editor_font_size(), DEFAULT_FONT_SIZE);
+
+        engine.set_editor_font_size(24).unwrap();
+        assert_eq!(engine.editor_font_size(), 24);
+
+        // Nobody gets a 500px or a 2px reading size.
+        engine.set_editor_font_size(500).unwrap();
+        assert_eq!(engine.editor_font_size(), MAX_FONT_SIZE);
+        engine.set_editor_font_size(1).unwrap();
+        assert_eq!(engine.editor_font_size(), MIN_FONT_SIZE);
+
+        engine.set_editor_font_size(20).unwrap();
+        let mut reloaded = Engine::new(config_path.clone());
+        reloaded.load().unwrap();
+        assert_eq!(reloaded.editor_font_size(), 20);
 
         cleanup(&config_path);
     }

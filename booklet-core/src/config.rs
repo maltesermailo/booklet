@@ -16,6 +16,9 @@ pub struct Config {
     pub active: Option<PathBuf>,
     #[serde(default)]
     pub expanded: Vec<PathBuf>,
+    /// Reading size for the editor, in pixels. `None` means the default.
+    #[serde(default)]
+    pub editor_font_size: Option<u32>,
 }
 
 /// Loads the config. A missing file is not an error — it means nothing has been
@@ -75,6 +78,7 @@ mod tests {
             vaults: vec![PathBuf::from("/notes/personal"), PathBuf::from("/work/notes")],
             active: Some(PathBuf::from("/work/notes")),
             expanded: vec![PathBuf::from("/notes/personal/Book")],
+            editor_font_size: Some(20),
         };
 
         save(&path, &config).unwrap();

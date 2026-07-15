@@ -11,4 +11,5 @@ Icon 1.0 Icon.qml
 IconButton 1.0 IconButton.qml
 TabStrip 1.0 TabStrip.qml
 StatusBar 1.0 StatusBar.qml
+Notice 1.0 Notice.qml
 singleton Theme 1.0 Theme.qml

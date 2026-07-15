@@ -29,8 +29,7 @@ impl NoteEditor {
         self.vaults = match config::load(&crate::library::default_config_path()) {
             Ok(config) => config.vaults,
             Err(error) => {
-                // TODO (M3): surface this in the UI instead of the console.
-                eprintln!("booklet: could not read vault list: {error}");
+                self.failed(format!("Could not read vault list: {error}"));
                 Vec::new()
             }
         };
@@ -49,8 +48,7 @@ impl NoteEditor {
                 self.note_opened(id, title);
             }
             Err(error) => {
-                // TODO (M3): surface this in the UI instead of the console.
-                eprintln!("booklet: could not open note '{id}': {error}");
+                self.failed(format!("Could not open note '{id}': {error}"));
             }
         }
     }
@@ -74,8 +72,7 @@ impl NoteEditor {
         match created {
             Ok(path) => self.open(path.to_string_lossy().into_owned()),
             Err(error) => {
-                // TODO (M3): surface this in the UI instead of the console.
-                eprintln!("booklet: could not create note '{title}': {error}");
+                self.failed(format!("Could not create note '{title}': {error}"));
             }
         }
     }
@@ -114,6 +111,25 @@ impl NoteEditor {
         serde_json::to_string(&segments).expect("breadcrumb serializes to JSON")
     }
 
+    /// The line above the note: which section it sits in, and when it was last
+    /// written (epoch seconds; -1 when unknown). QML does the wording.
+    #[qslot]
+    fn meta(&self) -> String {
+        let Some(document) = &self.document else {
+            return "{}".into();
+        };
+
+        let section = document
+            .path()
+            .parent()
+            .and_then(|folder| folder.file_name())
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let modified = document.modified().map(|seconds| seconds as f64).unwrap_or(-1.0);
+
+        serde_json::json!({ "section": section, "modified": modified }).to_string()
+    }
+
     /// The open note's markdown. The editor is one surface over the whole note,
     /// so this is what it shows.
     #[qslot]
@@ -130,7 +146,7 @@ impl NoteEditor {
         };
 
         document.set_source(&text);
-        self.unsaved = true;
+        self.set_unsaved(true);
     }
 
     /// Writes the note if it has unsaved text. Called by the editor on a
@@ -141,31 +157,55 @@ impl NoteEditor {
             return;
         }
 
-        let Some(document) = &self.document else {
-            self.unsaved = false;
-            return;
+        // Take the result before touching `self` again: emitting a signal needs
+        // `&mut self`, which the borrow on `document` would block.
+        let written = match &self.document {
+            Some(document) => document.write(),
+            None => {
+                self.set_unsaved(false);
+                return;
+            }
         };
 
-        if let Err(error) = document.write() {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not save note: {error}");
+        if let Err(error) = written {
+            // The text stays unsaved, so the indicator keeps saying so.
+            self.failed(format!("Could not save note: {error}"));
             return;
         }
 
-        self.unsaved = false;
-        self.saved();
+        self.set_unsaved(false);
     }
 
-    /// The note was written. Deliberately does not carry the text: the editor
-    /// already has it, and re-reading it would move the caret mid-typing.
+    /// Whether the editor's text has outrun the disk — drives the status bar.
+    #[qslot]
+    fn is_unsaved(&self) -> bool {
+        self.unsaved
+    }
+
+    /// Emitted only when the state flips, not on every keystroke. `false` also
+    /// means "just written", which is when backlinks are worth re-reading.
     #[qsignal]
-    fn saved(&mut self);
+    fn save_state_changed(&mut self, unsaved: bool);
+
+    /// Something the user should see went wrong. The UI shows it; nothing here
+    /// writes to a console nobody is reading.
+    #[qsignal]
+    fn failed(&mut self, message: String);
 
     #[qsignal]
     fn note_opened(&mut self, id: String, title: String);
 }
 
 impl NoteEditor {
+    fn set_unsaved(&mut self, unsaved: bool) {
+        if self.unsaved == unsaved {
+            return;
+        }
+
+        self.unsaved = unsaved;
+        self.save_state_changed(unsaved);
+    }
+
     /// The vault holding the open note. Links resolve only inside it, so a
     /// vault stays self-contained.
     fn current_vault(&self) -> Option<&Path> {

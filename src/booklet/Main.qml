@@ -18,6 +18,45 @@ ApplicationWindow {
     property bool marginaliaVisible: true
     property string noteTitle: ""
 
+    // Where you have been. Following a link takes you away, so there has to be
+    // a way back. `navigating` keeps back/forward from recording their own
+    // moves as new history.
+    property var history: []
+    property int historyAt: -1
+    property bool navigating: false
+    readonly property bool canGoBack: historyAt > 0
+    readonly property bool canGoForward: historyAt >= 0 && historyAt < history.length - 1
+
+    function recordVisit(id) {
+        if (root.navigating || id === "")
+            return
+        if (root.historyAt >= 0 && root.history[root.historyAt] === id)
+            return
+
+        // Going somewhere new drops the forward trail, as a browser does.
+        var trail = root.history.slice(0, root.historyAt + 1)
+        trail.push(id)
+        root.history = trail
+        root.historyAt = trail.length - 1
+    }
+
+    function goTo(index) {
+        root.navigating = true
+        root.historyAt = index
+        NoteEditor.open(root.history[index])
+        root.navigating = false
+    }
+
+    function goBack() {
+        if (root.canGoBack)
+            root.goTo(root.historyAt - 1)
+    }
+
+    function goForward() {
+        if (root.canGoForward)
+            root.goTo(root.historyAt + 1)
+    }
+
     Component.onCompleted: {
         // Load the persisted vault list; a path argument seeds/adds one vault
         // (handy for the bundled sample: `cargo run -- "$(pwd)/vault"`).
@@ -32,7 +71,31 @@ ApplicationWindow {
 
     Connections {
         target: NoteEditor
-        function onNote_opened(id, title) { root.noteTitle = title }
+        function onNote_opened(id, title) {
+            root.noteTitle = title
+            root.recordVisit(id)
+        }
+    }
+
+    // StandardKey rather than a written-out "Ctrl++": where the punctuation sits
+    // differs per layout, and Qt knows where. The engine clamps the result.
+    Shortcut {
+        sequences: [StandardKey.ZoomIn]
+        onActivated: Library.set_editor_font_size(Library.editor_font_size() + 1)
+    }
+    Shortcut {
+        sequences: [StandardKey.ZoomOut]
+        onActivated: Library.set_editor_font_size(Library.editor_font_size() - 1)
+    }
+
+    // Arrows, not brackets: ⌘[ / ⌘] need ⌥5 / ⌥6 on a German layout.
+    Shortcut {
+        sequence: "Ctrl+Alt+Left"
+        onActivated: root.goBack()
+    }
+    Shortcut {
+        sequence: "Ctrl+Alt+Right"
+        onActivated: root.goForward()
     }
 
     // Qt maps Ctrl to Cmd on macOS, so these are Cmd+K / Cmd+L / … there.
@@ -96,6 +159,11 @@ ApplicationWindow {
 
             // A hidden panel's own toggle goes with it, so the way back lives
             // in the topbar.
+            canGoBack: root.canGoBack
+            canGoForward: root.canGoForward
+            onGoBack: root.goBack()
+            onGoForward: root.goForward()
+
             sidebarHidden: !root.sidebarVisible
             marginaliaHidden: !root.marginaliaVisible
             onShowSidebar: root.sidebarVisible = true
@@ -146,6 +214,7 @@ ApplicationWindow {
             }
         }
 
+        Notice { Layout.fillWidth: true }
         StatusBar { Layout.fillWidth: true }
     }
 

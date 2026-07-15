@@ -30,8 +30,7 @@ impl Backlinks {
         self.vaults = match config::load(&crate::library::default_config_path()) {
             Ok(config) => config.vaults,
             Err(error) => {
-                // TODO (M3): surface this in the UI instead of the console.
-                eprintln!("booklet: could not read vault list: {error}");
+                self.failed(format!("Could not read vault list: {error}"));
                 Vec::new()
             }
         };
@@ -58,4 +57,8 @@ impl Backlinks {
         // Backlinks hold only strings, so serialization cannot fail.
         serde_json::to_string(&views).expect("backlinks serialize to JSON")
     }
+
+    /// Something the user should see went wrong.
+    #[qsignal]
+    fn failed(&mut self, message: String);
 }

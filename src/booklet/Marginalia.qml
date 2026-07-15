@@ -39,8 +39,9 @@ Rectangle {
             panel.noteTitle = title
             panel.backlinks = JSON.parse(Backlinks.for_note(id, title))
         }
-        function onSaved() {
-            if (panel.noteId !== "")
+        // false means "just written", which is when backlinks may have moved.
+        function onSave_state_changed(unsaved) {
+            if (!unsaved && panel.noteId !== "")
                 panel.backlinks = JSON.parse(Backlinks.for_note(panel.noteId, panel.noteTitle))
         }
     }

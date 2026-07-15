@@ -31,8 +31,7 @@ impl Library {
     #[qslot]
     fn load(&mut self) {
         if let Err(error) = self.engine.load() {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not read vault list: {error}");
+            self.failed(format!("Could not read vault list: {error}"));
         }
 
         self.watch_vaults();
@@ -42,8 +41,7 @@ impl Library {
     #[qslot]
     fn add_vault(&mut self, path: String) {
         if let Err(error) = self.engine.add_vault(PathBuf::from(path)) {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not save vault list: {error}");
+            self.failed(format!("Could not save vault list: {error}"));
         }
 
         self.watch_vaults();
@@ -53,8 +51,7 @@ impl Library {
     #[qslot]
     fn remove_vault(&mut self, path: String) {
         if let Err(error) = self.engine.remove_vault(Path::new(&path)) {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not save vault list: {error}");
+            self.failed(format!("Could not save vault list: {error}"));
         }
 
         self.watch_vaults();
@@ -79,8 +76,7 @@ impl Library {
     #[qslot]
     fn toggle(&mut self, id: String) {
         if let Err(error) = self.engine.toggle(Path::new(&id)) {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not save expansion state: {error}");
+            self.failed(format!("Could not save expansion state: {error}"));
         }
 
         self.tree_changed();
@@ -113,12 +109,31 @@ impl Library {
             .unwrap_or_default()
     }
 
+    /// Reading size for the editor, in pixels.
+    #[qslot]
+    fn editor_font_size(&self) -> i32 {
+        self.engine.editor_font_size() as i32
+    }
+
+    /// Sets the reading size. The engine clamps it to something usable.
+    #[qslot]
+    fn set_editor_font_size(&mut self, size: i32) {
+        if let Err(error) = self.engine.set_editor_font_size(size.max(0) as u32) {
+            self.failed(format!("Could not save the reading size: {error}"));
+        }
+
+        self.font_size_changed();
+    }
+
+    /// The reading size changed; the editor re-reads it.
+    #[qsignal]
+    fn font_size_changed(&mut self);
+
     /// Switches which vault is being read.
     #[qslot]
     fn set_active(&mut self, id: String) {
         if let Err(error) = self.engine.set_active(Path::new(&id)) {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not save the active vault: {error}");
+            self.failed(format!("Could not save the active vault: {error}"));
         }
 
         self.watch_vaults();
@@ -135,8 +150,7 @@ impl Library {
         match created {
             Ok(path) => path.to_string_lossy().into_owned(),
             Err(error) => {
-                // TODO (M3): surface this in the UI instead of the console.
-                eprintln!("booklet: could not create note '{name}': {error}");
+                self.failed(format!("Could not create note '{name}': {error}"));
                 String::new()
             }
         }
@@ -146,8 +160,7 @@ impl Library {
     #[qslot]
     fn create_section(&mut self, parent_id: String, name: String) {
         if let Err(error) = self.engine.create_section(Path::new(&parent_id), &name) {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not create section '{name}': {error}");
+            self.failed(format!("Could not create section '{name}': {error}"));
         }
 
         self.tree_changed();
@@ -163,8 +176,7 @@ impl Library {
         match renamed {
             Ok(path) => path.to_string_lossy().into_owned(),
             Err(error) => {
-                // TODO (M3): surface this in the UI instead of the console.
-                eprintln!("booklet: could not rename to '{name}': {error}");
+                self.failed(format!("Could not rename to '{name}': {error}"));
                 String::new()
             }
         }
@@ -175,8 +187,7 @@ impl Library {
     #[qslot]
     fn delete_entry(&mut self, id: String) {
         if let Err(error) = self.engine.delete(Path::new(&id)) {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not delete '{id}': {error}");
+            self.failed(format!("Could not delete '{id}': {error}"));
         }
 
         self.tree_changed();
@@ -186,8 +197,7 @@ impl Library {
     #[qslot]
     fn collapse_all(&mut self) {
         if let Err(error) = self.engine.collapse_all() {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not save expansion state: {error}");
+            self.failed(format!("Could not save expansion state: {error}"));
         }
 
         self.tree_changed();
@@ -198,8 +208,7 @@ impl Library {
     #[qslot]
     fn reveal(&mut self, id: String) {
         if let Err(error) = self.engine.reveal(Path::new(&id)) {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not save expansion state: {error}");
+            self.failed(format!("Could not save expansion state: {error}"));
         }
 
         self.tree_changed();
@@ -209,6 +218,11 @@ impl Library {
     // emitting it does not mutate our state.
     #[qsignal]
     fn tree_changed(&mut self);
+
+    /// Something the user should see went wrong. The UI shows it; nothing here
+    /// writes to a console nobody is reading.
+    #[qsignal]
+    fn failed(&mut self, message: String);
 }
 
 impl Library {
@@ -231,7 +245,7 @@ impl Library {
         let mut watcher = match notify::recommended_watcher(handler) {
             Ok(watcher) => watcher,
             Err(error) => {
-                eprintln!("booklet: could not start the file watcher: {error}");
+                self.failed(format!("Could not start the file watcher: {error}"));
                 return;
             }
         };

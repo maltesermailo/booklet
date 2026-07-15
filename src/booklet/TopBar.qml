@@ -22,6 +22,14 @@ Rectangle {
     signal showSidebar()
     signal showMarginalia()
 
+    property bool canGoBack: false
+    property bool canGoForward: false
+    signal goBack()
+    signal goForward()
+
+    readonly property string backIcon: "M15 5l-7 7 7 7"
+    readonly property string forwardIcon: "M9 5l7 7-7 7"
+
     // Same 24×24 grid as the reference's icons; the divider says which side.
     readonly property string sidebarIcon: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M9 4v16"
     readonly property string marginaliaIcon: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M15 4v16"
@@ -76,6 +84,25 @@ Rectangle {
             color: Theme.brass
             font.family: Theme.display
             font.pixelSize: 17
+        }
+
+        // Following a link takes you away from where you were.
+        Row {
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: 2
+
+            IconButton {
+                path: bar.backIcon
+                tip: "Back (⌘⌥←)"
+                enabled: bar.canGoBack
+                onClicked: bar.goBack()
+            }
+            IconButton {
+                path: bar.forwardIcon
+                tip: "Forward (⌘⌥→)"
+                enabled: bar.canGoForward
+                onClicked: bar.goForward()
+            }
         }
 
         Rectangle {

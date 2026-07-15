@@ -42,6 +42,7 @@ fn main() {
     qtbridge::include_bytes_qml!("booklet/ShelfView.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/TopBar.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/StatusBar.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/Notice.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/TabStrip.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/IconButton.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/Icon.qml", "qt/qml");

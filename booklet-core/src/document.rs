@@ -53,6 +53,14 @@ impl Document {
         &self.source
     }
 
+    /// When the note was last written, in seconds since the epoch. `None` if the
+    /// filesystem will not say — the caller just shows nothing then.
+    pub fn modified(&self) -> Option<u64> {
+        let modified = std::fs::metadata(&self.path).ok()?.modified().ok()?;
+
+        modified.duration_since(std::time::UNIX_EPOCH).ok().map(|since| since.as_secs())
+    }
+
     /// Takes the editor's text without touching the disk. Kept apart from
     /// [`Document::write`] so the caller can decide when to pay for I/O.
     pub fn set_source(&mut self, source: &str) {

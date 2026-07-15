@@ -22,9 +22,14 @@ class MarkdownHighlighter : public QSyntaxHighlighter
     // Where the caret is. Syntax markers show only on the line holding it, and
     // collapse to nothing everywhere else — Obsidian's live preview.
     Q_PROPERTY(int cursorPosition READ cursorPosition WRITE setCursorPosition NOTIFY cursorPositionChanged)
+    // The titles that exist in the vault. A [[link]] to anything else is drawn
+    // as unresolved — which matters because renaming a note deliberately does
+    // not rewrite the links pointing at it.
+    Q_PROPERTY(QStringList knownTitles READ knownTitles WRITE setKnownTitles NOTIFY knownTitlesChanged)
     Q_PROPERTY(QColor markerColor MEMBER m_markerColor NOTIFY styleChanged)
     Q_PROPERTY(QColor textColor MEMBER m_textColor NOTIFY styleChanged)
     Q_PROPERTY(QColor linkColor MEMBER m_linkColor NOTIFY styleChanged)
+    Q_PROPERTY(QColor unresolvedColor MEMBER m_unresolvedColor NOTIFY styleChanged)
     Q_PROPERTY(QString headingFamily MEMBER m_headingFamily NOTIFY styleChanged)
     Q_PROPERTY(int headingPixelSize MEMBER m_headingPixelSize NOTIFY styleChanged)
 
@@ -37,9 +42,13 @@ public:
     int cursorPosition() const;
     void setCursorPosition(int position);
 
+    QStringList knownTitles() const;
+    void setKnownTitles(const QStringList &titles);
+
 Q_SIGNALS:
     void documentChanged();
     void cursorPositionChanged();
+    void knownTitlesChanged();
     void styleChanged();
 
 protected:
@@ -53,9 +62,11 @@ private:
     QQuickTextDocument *m_document = nullptr;
     int m_cursorPosition = -1;
     int m_cursorBlock = -1;
+    QStringList m_knownTitles;
     QColor m_markerColor;
     QColor m_textColor;
     QColor m_linkColor;
+    QColor m_unresolvedColor;
     QString m_headingFamily;
     int m_headingPixelSize = 24;
 };

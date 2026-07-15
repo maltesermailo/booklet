@@ -85,11 +85,14 @@ shape is underspecified in the current docs.
 With the logic in the library, the qtbridge layer becomes thin adapters.
 Apply the idiom fixes here (they were the original scaffold-rewrite items):
 
-- [ ] **Never swallow errors (Rule 7).** Surface failures the library returns
-      via signals + minimal QML — notably failed save/read
-      (`save_failed(reason)` / `read_failed`), which the scaffold currently
-      drops with `let _ = fs::write` and `unwrap_or_default`. *(User decision:
-      signals + UI, not just propagate/log.)*
+- [x] **Never swallow errors (Rule 7).** Every adapter emits `failed(message)`
+      and `Notice.qml` shows it — 16 console-only failures are now visible. The
+      status bar carries saved/unsaved (`save_state_changed`), which matters
+      because saving is debounced and silent. Verified against a real failure: a
+      read-only note reports "Could not save note: Permission denied" and stays
+      marked unsaved rather than falsely claiming it saved.
+      Two `eprintln!` remain on purpose — font registration and watch-start
+      happen before/outside any note context and have no UI to land in.
 - [ ] **No abbreviations (Rule 6).** Any short bindings surviving into the
       adapters get descriptive names.
 - [ ] **Blank lines between logical sections** in adapter methods.
@@ -253,17 +256,23 @@ Gaps found comparing the reference to the current QML:
 
 ### 5e — Editor
 
-- [ ] **Back / forward** history — following a wiki-link currently takes you away
-      with no way back.
-- [ ] **Note rename** — the filename is the note's identity and can drift from
-      the `# Title` heading.
-- [ ] **Save indicator** — saving is silent-on-commit today.
-- [ ] **Preview / Source toggle** at the page's top-right — a whole-note source
-      mode alongside the existing per-block click-to-edit.
-- [ ] **Unresolved link styling** — `--text-soft` + dashed underline. Needs core:
-      each `[[link]]` must be *resolved* per block, not rewritten blindly.
-- [ ] **Note meta line** — "● PIXEL 7 · EDITED TODAY" above the title; needs the
-      section name and mtime from core.
+- [x] **Back / forward** history — topbar buttons and `⌘⌥←` / `⌘⌥→` (arrows,
+      not `⌘[`/`⌘]`: brackets need `⌥5`/`⌥6` on a German layout). Going somewhere
+      new drops the forward trail, as a browser does.
+- [x] **Note rename** — landed in 5d instead: renamed inline in the tree.
+- [x] **Save indicator** — in the status bar, driven by `save_state_changed`.
+      A failed write stays `unsaved` rather than lying (done with M3).
+- [x] **Preview / Source toggle** at the page's top-right. Now that the editor
+      is one live-preview surface, "Source" detaches the highlighter: the
+      markdown exactly as written, in mono, with nothing hidden.
+- [x] **Unresolved link styling** — `--text-soft` + dashed underline. The
+      highlighter takes the vault's titles (`knownTitles`, refreshed on
+      `tree_changed`) and resolves `[[Title|alias]]` on the title. Verified:
+      `[[Port log]]` resolves, `[[TRACE32 notes]]` does not. This is what makes
+      links broken by a rename visible.
+- [x] **Note meta line** — "● PIXEL 7 · EDITED TODAY" above the text, from
+      `NoteEditor.meta()` (section + mtime; QML does the wording). Verified:
+      `{"modified":…, "section":"Pixel 7"}`.
 
 ### 5f — Marginalia and the star map
 

@@ -49,6 +49,22 @@ void MarkdownHighlighter::setCursorPosition(int position)
     }
 }
 
+QStringList MarkdownHighlighter::knownTitles() const
+{
+    return m_knownTitles;
+}
+
+void MarkdownHighlighter::setKnownTitles(const QStringList &titles)
+{
+    if (m_knownTitles == titles)
+        return;
+
+    m_knownTitles = titles;
+    // A note appearing or vanishing changes which links resolve.
+    rehighlight();
+    Q_EMIT knownTitlesChanged();
+}
+
 int MarkdownHighlighter::blockNumberAt(int position) const
 {
     // document() is QSyntaxHighlighter's — the QTextDocument we attached to.
@@ -129,13 +145,20 @@ void MarkdownHighlighter::highlightBlock(const QString &text)
         setFormat(match.capturedStart(3), 1, marker);
     }
 
-    // [[wiki links]]: the target reads as a link, the brackets go.
+    // [[wiki links]]: the target reads as a link, the brackets go. A link to a
+    // note that does not exist yet is dimmed and dashed, so a link broken by a
+    // rename is visible rather than a surprise.
     static const QRegularExpression link(QStringLiteral("(\\[\\[)([^\\]]+)(\\]\\])"));
     for (auto it = link.globalMatch(text); it.hasNext();) {
         const QRegularExpressionMatch match = it.next();
+        // [[Title|alias]] resolves on the title, not the alias.
+        const QString title = match.captured(2).section(QLatin1Char('|'), 0, 0);
+        const bool resolved = m_knownTitles.contains(title);
+
         QTextCharFormat target;
-        target.setForeground(m_linkColor);
-        target.setFontUnderline(true);
+        target.setForeground(resolved ? m_linkColor : m_unresolvedColor);
+        target.setUnderlineStyle(resolved ? QTextCharFormat::SingleUnderline
+                                          : QTextCharFormat::DashUnderline);
         setFormat(match.capturedStart(2), match.capturedLength(2), target);
 
         const QTextCharFormat marker = markerFormat(target, onCursorLine);

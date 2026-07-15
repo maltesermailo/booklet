@@ -11,6 +11,8 @@ Rectangle {
 
     property string vaultName: ""
     property int noteCount: 0
+    property bool hasNote: false
+    property bool unsaved: false
 
     function reload() {
         var vaults = JSON.parse(Library.vaults())
@@ -24,6 +26,14 @@ Rectangle {
     Connections {
         target: Library
         function onTree_changed() { bar.reload() }
+    }
+    Connections {
+        target: NoteEditor
+        function onNote_opened(id, title) {
+            bar.hasNote = id !== ""
+            bar.unsaved = NoteEditor.is_unsaved()
+        }
+        function onSave_state_changed(unsaved) { bar.unsaved = unsaved }
     }
 
     Rectangle {
@@ -43,5 +53,30 @@ Rectangle {
         color: Theme.textSoft
         font.family: Theme.ui
         font.pixelSize: 11
+    }
+
+    // Saving is debounced and silent, so the state has to be visible somewhere.
+    Row {
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.right: parent.right
+        anchors.rightMargin: 14
+        spacing: 5
+        visible: bar.hasNote
+
+        Rectangle {
+            anchors.verticalCenter: parent.verticalCenter
+            width: 6
+            height: 6
+            radius: 3
+            color: bar.unsaved ? Theme.ember : "transparent"
+            border.color: bar.unsaved ? Theme.ember : Theme.textDim
+            border.width: 1
+        }
+        Text {
+            text: bar.unsaved ? "unsaved" : "saved"
+            color: bar.unsaved ? Theme.text : Theme.textSoft
+            font.family: Theme.ui
+            font.pixelSize: 11
+        }
     }
 }
