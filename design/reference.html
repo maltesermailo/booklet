@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="night">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Booklet — Design Reference (night / atlas)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400;0,500;0,600;1,400&family=Alegreya+Sans:wght@400;500;700&family=Spectral:ital,wght@0,400;0,500;1,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    /* ============================================================
+       Booklet design reference for Claude Code.
+       Everything visual derives from the custom properties below.
+       These names map 1:1 to qml/Theme.qml in the Booklet repo.
+       ============================================================ */
+
+    html[data-theme="night"]{
+      --bg:          #171512;   /* app background            */
+      --sidebar:     #161514;   /* tree pane                 */
+      --sidebar-line:#26241F;
+      --page:        #221F1A;   /* the note sheet            */
+      --page-line:   #35302A;   /* hairlines, borders        */
+      --panel:       #191714;   /* marginalia pane           */
+      --code-bg:     #10150F;
+      --edit-bg:     #1C1916;   /* block in source mode      */
+      --text:        #E6DDC9;   /* body ink (parchment)      */
+      --text-bright: #F0E8D2;   /* titles, active items      */
+      --text-soft:   #9C9280;   /* secondary                 */
+      --text-dim:    #615B4E;   /* chevrons, hints           */
+      --accent:      #C2A45C;   /* brass: active UI, foil    */
+      --accent-deep: #A8842C;   /* rules, quote bars         */
+      --link:        #C4695A;   /* ember: wiki-links         */
+      --active-pill: #2A2721;   /* selected row              */
+    }
+    html[data-theme="atlas"]{
+      --bg:          #090D15;   /* void                      */
+      --sidebar:     #0C111C;
+      --sidebar-line:#1C2635;
+      --page:        #0E1420;   /* chart                     */
+      --page-line:   #1C2635;
+      --panel:       #0C111C;
+      --code-bg:     #070B12;
+      --edit-bg:     #101826;
+      --text:        #D6DEEB;   /* starlight                 */
+      --text-bright: #EDF2FA;
+      --text-soft:   #8A96AC;
+      --text-dim:    #55607A;
+      --accent:      #DFC078;   /* gilt                      */
+      --accent-deep: #B89A54;
+      --link:        #74BCC4;   /* comet                     */
+      --active-pill: #16202E;
+    }
+
+    :root{
+      --f-display:"EB Garamond",Georgia,serif;   /* titles, book names        */
+      --f-ui:"Alegreya Sans",system-ui,sans-serif; /* chrome, tree, metadata  */
+      --f-body:"Spectral",Georgia,serif;         /* note prose                */
+      --f-mono:"JetBrains Mono",ui-monospace,monospace; /* source, code, kbd  */
+    }
+
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{background:var(--bg);color:var(--text);font-family:var(--f-ui);
+      transition:background .2s;padding:28px;min-height:100vh}
+    button{font-family:inherit;cursor:pointer;background:none;border:none;color:inherit}
+
+    /* ---------- reference chrome (not part of the app design) ---------- */
+    .ref-head{max-width:1080px;margin:0 auto 18px;display:flex;align-items:baseline;gap:16px;flex-wrap:wrap}
+    .ref-head h1{font-family:var(--f-display);font-weight:500;font-size:24px;color:var(--text-bright)}
+    .ref-head .sub{font-size:13px;color:var(--text-soft)}
+    .switch{margin-left:auto;display:flex;border:1px solid var(--page-line);border-radius:6px;overflow:hidden}
+    .switch button{padding:5px 14px;font-size:13px;color:var(--text-soft)}
+    .switch button.on{background:var(--accent);color:var(--bg)}
+    .tokens{max-width:1080px;margin:0 auto 22px;display:flex;gap:8px;flex-wrap:wrap}
+    .tok{display:flex;align-items:center;gap:7px;font-family:var(--f-mono);font-size:11px;
+      color:var(--text-soft);border:1px solid var(--page-line);border-radius:99px;padding:3px 10px 3px 4px}
+    .tok i{width:16px;height:16px;border-radius:50%;border:1px solid var(--page-line)}
+
+    /* ---------- app mockup ---------- */
+    .app{max-width:1080px;margin:0 auto;border:1px solid var(--sidebar-line);
+      border-radius:8px;overflow:hidden}
+
+    .topbar{background:var(--sidebar);border-bottom:1px solid var(--sidebar-line);
+      display:flex;align-items:center;gap:12px;padding:9px 14px;font-size:13px;color:var(--text-soft)}
+    .topbar .mark{font-family:var(--f-display);font-size:17px;color:var(--accent)}
+    .topbar .crumb b{color:var(--text-bright);font-weight:500}
+    .topbar kbd{margin-left:auto;font-family:var(--f-mono);font-size:10.5px;
+      border:1px solid var(--page-line);border-radius:4px;padding:1px 6px;color:var(--text-soft)}
+    .sync{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--text-soft)}
+    .sync i{width:7px;height:7px;border-radius:50%;background:var(--accent);display:inline-block}
+
+    .cols{display:flex;min-height:560px}
+
+    /* --- sidebar icon toolbar --- */
+    .icobar{display:flex;gap:2px;padding:2px 4px 8px;border-bottom:1px solid var(--sidebar-line);
+      margin-bottom:6px}
+    .icobtn{width:26px;height:26px;border-radius:5px;display:flex;align-items:center;
+      justify-content:center;color:var(--text-soft)}
+    .icobtn:hover{background:var(--active-pill);color:var(--text-bright)}
+    .icobtn svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.8;
+      stroke-linecap:round;stroke-linejoin:round}
+    .icobar .sp{flex:1}
+
+    /* --- tab strip above the editor --- */
+    .editor-col{flex:1;display:flex;flex-direction:column;min-width:0}
+    .tabs{display:flex;align-items:flex-end;gap:2px;background:var(--sidebar);
+      border-bottom:1px solid var(--sidebar-line);padding:6px 8px 0}
+    .tab{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--text-soft);
+      padding:6px 10px 7px 12px;border:1px solid transparent;border-bottom:none;
+      border-radius:6px 6px 0 0;max-width:180px;white-space:nowrap;cursor:pointer}
+    .tab.active{background:var(--bg);border-color:var(--sidebar-line);color:var(--text-bright)}
+    .tab .x{color:var(--text-dim);font-size:13px;padding:0 3px;border-radius:3px}
+    .tab .x:hover{color:var(--text-bright);background:var(--active-pill)}
+    .tab-add{width:24px;height:24px;margin-bottom:3px;border-radius:5px;
+      color:var(--text-soft);font-size:15px}
+    .tab-add:hover{background:var(--active-pill);color:var(--text-bright)}
+
+    /* --- star map (sightlines) --- */
+    .starmap{background:var(--code-bg);border:1px solid var(--page-line);border-radius:6px;
+      margin-top:9px;padding:4px}
+    .starmap svg{display:block;width:100%}
+    .sm-line{stroke:var(--text-dim);stroke-width:.7;opacity:.55}
+    .sm-line.unres{stroke-dasharray:3 3;opacity:.35}
+    .sm-node{fill:var(--text-soft)}
+    .sm-node.out{fill:var(--link)}
+    .sm-node.unres{fill:none;stroke:var(--text-dim);stroke-width:1}
+    .sm-ring{fill:none;stroke:var(--link);stroke-width:1.2}
+    .sm-core{fill:var(--text-bright)}
+    .sm-label{font-family:var(--f-mono);font-size:7px;letter-spacing:.6px;
+      fill:var(--text-dim);text-transform:uppercase}
+    .sm-label.me{fill:var(--text-soft)}
+
+    /* --- vault picker (welcome screen) --- */
+    .ref-sect{max-width:1080px;margin:26px auto 10px;font-family:var(--f-display);
+      font-size:17px;color:var(--text-bright)}
+    .picker{max-width:520px;margin:0 auto;background:var(--sidebar);
+      border:1px solid var(--sidebar-line);border-radius:10px;padding:34px 34px 24px;
+      display:flex;flex-direction:column;align-items:center}
+    .picker .logo{width:56px;height:56px;margin-bottom:12px}
+    .picker h2{font-family:var(--f-display);font-size:26px;color:var(--text-bright);font-weight:500}
+    .picker .ver{font-size:12px;color:var(--text-soft);margin-top:3px}
+    .btn-primary{margin-top:16px;background:var(--accent);color:var(--sidebar);
+      font-size:13.5px;font-weight:500;padding:7px 26px;border-radius:6px}
+    .btn-primary:hover{background:var(--accent-deep)}
+    .pick-card{width:100%;margin-top:18px;background:var(--panel);
+      border:1px solid var(--page-line);border-radius:8px;overflow:hidden}
+    .pick-card .cap{font-size:10.5px;letter-spacing:2px;color:var(--text-soft);
+      padding:10px 16px 6px;text-transform:uppercase}
+    .vault-row{display:flex;align-items:center;gap:11px;padding:9px 16px;cursor:pointer}
+    .vault-row:hover{background:var(--active-pill)}
+    .vault-row .vdot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
+    .vault-row .vname{font-family:var(--f-display);font-size:14.5px;color:var(--text-bright)}
+    .vault-row .vpath{font-family:var(--f-mono);font-size:10.5px;color:var(--text-dim);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .vault-row .vwhen{margin-left:auto;font-size:11px;color:var(--text-soft);flex-shrink:0}
+    .vault-row .vx{color:var(--text-dim);padding:0 3px;border-radius:3px;font-size:13px}
+    .vault-row .vx:hover{color:var(--text-bright);background:var(--sidebar)}
+    .act-row{display:flex;align-items:center;gap:14px;padding:13px 16px;
+      border-top:1px solid var(--page-line)}
+    .act-row:first-child{border-top:none}
+    .act-row .at{font-size:13.5px;color:var(--text-bright);font-weight:500}
+    .act-row .ad{font-size:12px;color:var(--text-soft);margin-top:2px;line-height:1.45}
+    .act-row button{margin-left:auto;flex-shrink:0;font-size:12.5px;padding:6px 16px;
+      border-radius:6px;border:1px solid var(--page-line);color:var(--text)}
+    .act-row button:hover{border-color:var(--accent);color:var(--accent)}
+    .act-row button.hi{background:var(--accent);border-color:var(--accent);color:var(--sidebar)}
+    .act-row button.hi:hover{background:var(--accent-deep)}
+    .picker .lang{width:100%;margin-top:16px;display:flex;align-items:center;gap:10px;
+      color:var(--text-dim);font-size:13px}
+    .picker .lang select{flex:1;background:var(--panel);color:var(--text);
+      border:1px solid var(--page-line);border-radius:6px;padding:7px 10px;font-family:var(--f-ui)}
+
+    /* --- tree pane (Obsidian-flat) --- */
+    .tree{width:230px;flex-shrink:0;background:var(--sidebar);padding:8px 6px;font-size:13px}
+    .row{display:flex;align-items:center;gap:6px;padding:3px 8px;border-radius:4px;height:24px}
+    .row:hover{background:rgba(255,255,255,.03)}
+    .row .tw{font-size:10px;color:var(--text-dim);width:10px}
+    .row .chip{width:3px;height:12px;border-radius:1px;flex-shrink:0}
+    .row.book{color:var(--text-bright);font-weight:500}
+    .row.sec{color:var(--text)}
+    .row.note{color:var(--text-soft)}
+    .row.active{background:var(--active-pill);color:var(--text-bright)}
+    .indent{margin-left:13px;border-left:1px solid var(--sidebar-line)}
+
+    /* --- editor page (block editor) --- */
+    .pagewrap{flex:1;background:var(--bg);padding:16px 14px;display:flex;justify-content:center}
+    .page{background:var(--page);border:1px solid var(--page-line);border-radius:4px;
+      width:100%;max-width:560px;padding:22px 26px 28px 34px;position:relative}
+    .page .stitch{position:absolute;top:10px;bottom:10px;left:16px;width:1px;
+      background:repeating-linear-gradient(180deg,var(--page-line) 0 5px,transparent 5px 11px)}
+    .mode{position:absolute;top:12px;right:12px;display:flex;font-size:11px;
+      border:1px solid var(--page-line);border-radius:5px;overflow:hidden}
+    .mode span{padding:2px 9px;color:var(--text-soft)}
+    .mode span.on{background:var(--accent);color:var(--page)}
+    .meta{font-size:11px;letter-spacing:1.5px;color:var(--text-soft)}
+    .h1{font-family:var(--f-display);font-size:26px;color:var(--text-bright);margin:8px 0 12px}
+    .prose{font-family:var(--f-body);font-size:14.5px;line-height:1.7}
+    .prose p{margin:0 0 12px}
+    .prose h2{font-family:var(--f-display);font-size:18px;color:var(--text-bright);margin:16px 0 6px}
+    a.wl{color:var(--link);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--link) 50%,transparent)}
+    a.wl:hover{background:color-mix(in srgb,var(--link) 10%,transparent)}
+    a.wl.unresolved{color:var(--text-soft);border-bottom-style:dashed}
+    .code{font-family:var(--f-mono);font-size:12px;line-height:1.6;background:var(--code-bg);
+      border:1px solid var(--sidebar-line);border-radius:5px;padding:10px 12px;margin:0 0 12px;color:var(--text)}
+    .quote{border-left:3px solid var(--accent-deep);padding-left:12px;color:var(--text-soft);
+      font-style:italic;margin:0 0 12px}
+    /* a block in source mode — what a clicked block looks like */
+    .srcblock{font-family:var(--f-mono);font-size:12.5px;line-height:1.65;background:var(--edit-bg);
+      border-radius:5px;padding:10px 12px;margin:0 0 12px;color:var(--text-bright);white-space:pre-wrap;
+      outline:1px solid var(--page-line)}
+    .srcblock .syn{color:var(--text-dim)}
+    .srcblock .wl{color:var(--link)}
+    .caret{display:inline-block;width:1.5px;height:14px;background:var(--accent);
+      vertical-align:-2px;animation:blink 1.1s steps(1) infinite}
+    @keyframes blink{50%{opacity:0}}
+
+    /* --- marginalia pane --- */
+    .margin{width:220px;flex-shrink:0;background:var(--panel);
+      border-left:1px solid var(--sidebar-line);padding:14px 12px}
+    .margin h3{font-family:var(--f-display);font-size:15px;color:var(--text-bright);font-weight:600}
+    .margin h3 span{font-family:var(--f-mono);font-size:11px;color:var(--text-soft);font-weight:400}
+    .bl{background:var(--page);border:1px solid var(--page-line);border-radius:6px;
+      padding:8px 9px;margin-top:9px}
+    .bl .from{font-size:10px;letter-spacing:1px;color:var(--text-soft);text-transform:uppercase}
+    .bl .snip{font-family:var(--f-body);font-size:11.5px;line-height:1.5;margin-top:4px}
+    .bl mark{background:color-mix(in srgb,var(--accent) 24%,transparent);color:var(--text-bright);padding:0 2px}
+    .subhead{font-size:10.5px;letter-spacing:2px;color:var(--text-soft);margin-top:14px}
+    .tags{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+    .tag{font-family:var(--f-mono);font-size:10.5px;border:1px solid var(--page-line);
+      background:var(--page);border-radius:99px;padding:1px 8px;color:var(--text-soft)}
+
+    .ref-notes{max-width:1080px;margin:20px auto 0;font-size:12.5px;color:var(--text-soft);line-height:1.6}
+    .ref-notes code{font-family:var(--f-mono);font-size:11.5px;color:var(--text)}
+  </style>
+</head>
+<body>
+
+<div class="ref-head">
+  <h1>Booklet — design reference</h1>
+  <span class="sub">two themes, one token vocabulary · maps 1:1 to qml/Theme.qml</span>
+  <div class="switch">
+    <button id="b-night" class="on" onclick="setTheme('night')">night</button>
+    <button id="b-atlas" onclick="setTheme('atlas')">atlas</button>
+  </div>
+</div>
+
+<div class="tokens" id="tokens"></div>
+
+<div class="app">
+  <div class="topbar">
+    <span class="mark">Booklet</span>
+    <span class="crumb">Systems Engineering / Kernel / Debugging / Pixel 7 / <b>KGDB setup</b></span>
+    <kbd>⌘K</kbd>
+    <span class="sync" title="Sync status — accent dot: synced, text-dim: offline, pulsing: syncing"><i></i>synced</span>
+  </div>
+
+  <div class="cols">
+    <!-- tree: Obsidian-flat, depth = 13px indent, chips = per-book binding color -->
+    <nav class="tree">
+      <!-- action toolbar: new note, new section, search, collapse all, hide sidebar -->
+      <div class="icobar">
+        <button class="icobtn" title="New note (⌘N) — creates in the selected section">
+          <svg viewBox="0 0 24 24"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 12v5M9.5 14.5h5"/></svg>
+        </button>
+        <button class="icobtn" title="New section — creates a folder in the selected book/section">
+          <svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><path d="M12 11v5M9.5 13.5h5"/></svg>
+        </button>
+        <button class="icobtn" title="Search / quick switcher (⌘K)">
+          <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.35-4.35"/></svg>
+        </button>
+        <span class="sp"></span>
+        <button class="icobtn" title="Collapse all">
+          <svg viewBox="0 0 24 24"><path d="M7 20l5-5 5 5"/><path d="M7 4l5 5 5-5"/></svg>
+        </button>
+        <button class="icobtn" title="Hide sidebar">
+          <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M9 4v16"/></svg>
+        </button>
+      </div>
+      <div class="row book"><span class="tw">▾</span><span class="chip" style="background:#3C5240"></span>Systems Engineering</div>
+      <div class="indent">
+        <div class="row sec"><span class="tw">▾</span>Kernel</div>
+        <div class="indent">
+          <div class="row sec"><span class="tw">▾</span>Debugging</div>
+          <div class="indent">
+            <div class="row sec"><span class="tw">▾</span>Pixel 7</div>
+            <div class="indent">
+              <div class="row note active">KGDB setup</div>
+              <div class="row note">Port log</div>
+              <div class="row note">CFI violations</div>
+            </div>
+          </div>
+          <div class="row sec"><span class="tw">▸</span>Graphics</div>
+        </div>
+        <div class="row sec"><span class="tw">▸</span>Hardware</div>
+      </div>
+      <div class="row book"><span class="tw">▸</span><span class="chip" style="background:#2F3E5C"></span>Protocols</div>
+      <div class="row book"><span class="tw">▸</span><span class="chip" style="background:#7C3128"></span>Theologie</div>
+    </nav>
+
+    <!-- block editor column: tab strip + page -->
+    <main class="editor-col">
+      <div class="tabs">
+        <div class="tab active">KGDB setup <span class="x" title="Close tab">×</span></div>
+        <div class="tab">Wayland and KMS <span class="x" title="Close tab">×</span></div>
+        <button class="tab-add" title="New tab">+</button>
+      </div>
+      <div class="pagewrap">
+        <article class="page">
+          <div class="stitch"></div>
+          <div class="mode"><span class="on">Preview</span><span>Source</span></div>
+          <div class="meta">● PIXEL 7 · EDITED TODAY</div>
+          <div class="h1">KGDB setup</div>
+          <div class="prose">
+            <p>Kernel debugging over serial needs three pieces: a UART reachable
+              from outside, <a class="wl" href="#">kgdboc</a> pointed at it, and a
+              debugger on the host speaking the GDB remote protocol. On the
+              <a class="wl" href="#">Port log</a> device the console UART is only
+              exposed on the debug connector.</p>
+
+            <!-- THIS block was clicked: raw markdown revealed, mono, edit surface -->
+            <div class="srcblock"><span class="syn">##</span> Kernel configuration<span class="caret"></span></div>
+
+            <p>Enable the debugger and keep the watchdog from biting while
+              execution is halted — see <a class="wl" href="#">CFI violations</a>.</p>
+            <div class="code">CONFIG_KGDB=y
+              CONFIG_KGDB_SERIAL_CONSOLE=y
+              kgdboc=ttySAC0,115200 kgdbwait</div>
+            <div class="quote">A halted kernel tells the truth; a printk tells a story.</div>
+            <p>Open question: trapping the Mali DVFS path from
+              <a class="wl" href="#">Wayland and KMS</a> before the NULL deref —
+              see also <a class="wl unresolved" href="#">TRACE32 notes</a> (unwritten).</p>
+          </div>
+        </article>
+      </div>
+    </main>
+
+    <!-- marginalia -->
+    <aside class="margin">
+      <h3>Marginalia <span>3</span></h3>
+      <!-- sightlines: current note as center star; incoming refs = soft dots,
+           outgoing links = link-colored dots, unresolved = hollow + dashed -->
+      <div class="starmap">
+        <svg viewBox="0 0 196 150" xmlns="http://www.w3.org/2000/svg">
+          <line class="sm-line" x1="98" y1="76" x2="38" y2="30"/>
+          <line class="sm-line" x1="98" y1="76" x2="160" y2="36"/>
+          <line class="sm-line" x1="98" y1="76" x2="34" y2="112"/>
+          <line class="sm-line" x1="98" y1="76" x2="158" y2="104"/>
+          <line class="sm-line unres" x1="98" y1="76" x2="112" y2="132"/>
+
+          <circle class="sm-node" cx="38" cy="30" r="2.4"/>
+          <text class="sm-label" x="44" y="27">Port log</text>
+
+          <circle class="sm-node" cx="160" cy="36" r="2.4"/>
+          <text class="sm-label" x="118" y="27">CFI violations</text>
+
+          <circle class="sm-node" cx="34" cy="112" r="2.4"/>
+          <text class="sm-label" x="24" y="126">Loom · Frame</text>
+
+          <circle class="sm-node out" cx="158" cy="104" r="2.4"/>
+          <text class="sm-label" x="128" y="118">Wayland · KMS</text>
+
+          <circle class="sm-node unres" cx="112" cy="132" r="2.4"/>
+          <text class="sm-label" x="120" y="136">TRACE32</text>
+
+          <circle class="sm-ring" cx="98" cy="76" r="6.5"/>
+          <circle class="sm-core" cx="98" cy="76" r="2.6"/>
+          <text class="sm-label me" x="70" y="94">KGDB setup</text>
+        </svg>
+      </div>
+      <div class="bl"><div class="from">Port log</div>
+        <div class="snip">…switch to the serial rig from <mark>KGDB setup</mark> instead of guessing from pstore…</div></div>
+      <div class="bl"><div class="from">CFI violations</div>
+        <div class="snip">…verified live with the breakpoints from <mark>KGDB setup</mark> rather than post-mortem…</div></div>
+      <div class="bl"><div class="from">Loom · Frame pipeline</div>
+        <div class="snip">…same UART bridge described in <mark>KGDB setup</mark> doubles for the Quest link…</div></div>
+      <div class="subhead">TAGS</div>
+      <div class="tags"><span class="tag">#kernel</span><span class="tag">#debugging</span><span class="tag">#uart</span></div>
+    </aside>
+  </div>
+</div>
+
+<div class="ref-sect">Vault picker (welcome screen)</div>
+<div class="picker">
+  <!-- mark: a closed book, gilt bands on the spine -->
+  <svg class="logo" viewBox="0 0 56 56">
+    <rect x="14" y="8" width="30" height="40" rx="3" fill="var(--accent)" opacity=".16"/>
+    <rect x="11" y="6" width="30" height="40" rx="3" fill="var(--page)" stroke="var(--accent)" stroke-width="1.6"/>
+    <rect x="11" y="6" width="7" height="40" rx="3" fill="var(--accent)" opacity=".9"/>
+    <line x1="24" y1="14" x2="36" y2="14" stroke="var(--accent-deep)" stroke-width="1.4"/>
+    <line x1="24" y1="19" x2="33" y2="19" stroke="var(--accent-deep)" stroke-width="1.4" opacity=".6"/>
+  </svg>
+  <h2>Booklet</h2>
+  <div class="ver">Version 0.1.0</div>
+  <button class="btn-primary">Schnellstart</button>
+
+  <div class="pick-card">
+    <div class="cap">Zuletzt geöffnet</div>
+    <div class="vault-row">
+      <span class="vdot" style="background:#3C5240"></span>
+      <span><span class="vname">Wissensbasis</span><br>
+        <span class="vpath">~/Documents/Vaults/Wissensbasis</span></span>
+      <span class="vwhen">vor 2 Std.</span><span class="vx" title="Aus Liste entfernen">×</span>
+    </div>
+    <div class="vault-row">
+      <span class="vdot" style="background:#2F3E5C"></span>
+      <span><span class="vname">WEFT Notizen</span><br>
+        <span class="vpath">~/Documents/Vaults/WEFT</span></span>
+      <span class="vwhen">gestern</span><span class="vx" title="Aus Liste entfernen">×</span>
+    </div>
+    <div class="vault-row">
+      <span class="vdot" style="background:#7C3128"></span>
+      <span><span class="vname">Theologie</span><br>
+        <span class="vpath">/Volumes/Daten/Vaults/Theologie</span></span>
+      <span class="vwhen">vor 5 Tagen</span><span class="vx" title="Aus Liste entfernen">×</span>
+    </div>
+  </div>
+
+  <div class="pick-card">
+    <div class="act-row">
+      <span><span class="at">Einen neuen Vault erstellen.</span><br>
+        <span class="ad">Erstelle einen neuen Booklet-Vault innerhalb eines Ordners.</span></span>
+      <button class="hi">Erstellen</button>
+    </div>
+    <div class="act-row">
+      <span><span class="at">Ordner als Vault öffnen.</span><br>
+        <span class="ad">Wähle einen vorhandenen Ordner mit Markdown-Dateien.</span></span>
+      <button>Öffnen</button>
+    </div>
+    <div class="act-row">
+      <span><span class="at">Mit Sync-Server verbinden</span><br>
+        <span class="ad">Erstelle einen synchronisierten Vault von einem bestehenden Remote-Vault.</span></span>
+      <button>Anmelden</button>
+    </div>
+  </div>
+
+  <div class="lang">
+    <span title="Hilfe">?</span>
+    <select><option>Deutsch</option><option>English</option></select>
+  </div>
+</div>
+
+<div class="ref-notes">
+  <p><b>Notes for implementation.</b> Fonts: <code>EB Garamond</code> (display: note titles,
+    book names, panel headings), <code>Spectral</code> (note prose), <code>Alegreya Sans</code>
+    (all chrome), <code>JetBrains Mono</code> (source mode, code, counts, kbd). Tree indentation
+    is <code>depth × 13px</code> with 1px indent guides; active row uses <code>--active-pill</code>
+    plus <code>--text-bright</code>. Wiki-links use <code>--link</code> with a 50%-opacity solid
+    underline; unresolved links use <code>--text-soft</code> with a dashed underline. A block in
+    source mode sits on <code>--edit-bg</code> in mono. The stitched dotted line 16px from the
+    page's left edge is the single decorative element on the page — keep it. Binding chips are
+    per-book data, not theme tokens; they stay identical across themes.</p>
+  <p><b>Action layer.</b> Sidebar toolbar (26px hit targets, 15px stroke icons at 1.8 weight,
+    hover = <code>--active-pill</code>): new note, new section, search, collapse-all, hide sidebar.
+    New note lands in the currently selected section (or book root); creating means writing
+    <code>Untitled.md</code> and immediately opening block 0 in source mode so typing the title is
+    the first act. Tab strip above the page: the active tab uses <code>--bg</code> with a
+    <code>--sidebar-line</code> border so it fuses with the editor area; inactive tabs are
+    borderless <code>--text-soft</code>; × (or middle-click) closes; ⌘T opens a tab, ⌘W closes.
+    Tabs are UI state (QML-side), not vault state. Sync pill in the topbar: accent dot = synced,
+    <code>--text-dim</code> dot = offline, pulsing = syncing; clicking it opens sync details.
+    Backend hooks these imply: <code>Library.create_note(parent_id)</code>,
+    <code>Library.create_section(parent_id)</code>, and a sync-status signal once the sync
+    engine exists.</p>
+  <p><b>Star map (sightlines).</b> Sits at the top of the Marginalia pane on
+    <code>--code-bg</code>. The current note is the center star: <code>--link</code> ring around a
+    <code>--text-bright</code> core. Incoming references are <code>--text-soft</code> dots,
+    outgoing links are <code>--link</code> dots, unresolved links are hollow <code>--text-dim</code>
+    dots on dashed sightlines; lines are 0.7px <code>--text-dim</code> at ~55% opacity, labels
+    7px mono uppercase. Layout is a plain radial spread — angle by index with slight radius
+    jitter, no force simulation. Clicking a dot opens that note (unresolved dots create it —
+    same <code>link_unresolved</code> hook as in the editor). Data is what the pane already has:
+    <code>Backlinks.for_note()</code> plus the current note's outgoing links, so the QML side is
+    one Canvas/Shape component with no new backend beyond an
+    <code>outgoing_links()</code> slot on <code>NoteEditor</code>. Cap at ~10 dots and let the
+    card list below carry the overflow.</p>
+  <p><b>Vault picker.</b> Shown when Booklet starts without a vault argument. Centered column
+    on <code>--sidebar</code>: mark, name, version, one primary button (<code>--accent</code> fill,
+    <code>--sidebar</code> text — the only filled button in the app), then two cards on
+    <code>--panel</code>. Card 1: <i>Zuletzt geöffnet</i> — vault name in the display face, path in
+    mono <code>--text-dim</code>, relative time right-aligned, × removes from the list only (never
+    touches the vault on disk); the dot is the vault's own accent, stored in the recents entry.
+    Card 2: the three actions — create, open folder, connect to sync server (the third ties into
+    the sync base feature: server URL + device token, then pulls the remote vault). Recents
+    persist as JSON in the platform config dir
+    (<code>QStandardPaths::AppConfigLocation</code> equivalent — <code>dirs::config_dir()/booklet/recent.json</code>),
+    most recent first, capped at 8. Backend surface: <code>recent_vaults()</code>,
+    <code>remove_recent(path)</code>, <code>create_vault(path)</code>; opening reuses the existing
+    <code>Library.open_vault</code>, which also bumps the recents entry.</p>
+</div>
+
+<script>
+  function setTheme(t){
+    document.documentElement.dataset.theme = t;
+    document.getElementById('b-night').classList.toggle('on', t==='night');
+    document.getElementById('b-atlas').classList.toggle('on', t==='atlas');
+    renderTokens();
+  }
+  function renderTokens(){
+    const names = ['--bg','--sidebar','--page','--page-line','--panel','--text',
+      '--text-bright','--text-soft','--text-dim','--accent','--accent-deep','--link','--active-pill'];
+    const cs = getComputedStyle(document.documentElement);
+    document.getElementById('tokens').innerHTML = names.map(n =>
+            `<span class="tok"><i style="background:${cs.getPropertyValue(n).trim()}"></i>${n} ${cs.getPropertyValue(n).trim()}</span>`
+    ).join('');
+  }
+  renderTokens();
+</script>
+</body>
+</html>

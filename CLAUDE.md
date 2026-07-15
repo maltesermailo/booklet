@@ -13,20 +13,28 @@ Stack: **QtQuick (QML) frontend, pure-Rust backend via Qt Bridges for Rust**
 
 ## Base features
 
-1. **Library tree** — vault of books (top-level folders, each with a
-   `folio.json` carrying binding color and shelf label) containing sections
-   (folders, nesting without limit) containing notes (`.md`).
+1. **Library tree** — a configurable set of vaults (the list persisted in
+   `~/.config/booklet/vaults.json`). **One vault is active at a time** (as in
+   Obsidian); the tree shows *its* books as the roots — there is no vault row —
+   and the topbar menu switches vaults. Each vault holds books (its top-level
+   folders, each with a `booklet.json` carrying binding color and shelf label)
+   containing sections (folders, nesting without limit) containing notes
+   (`.md`). The shelf and the quick switcher scope to the active vault; links
+   and backlinks scope to the note's own vault.
 2. **Block editor** — Obsidian-style live preview. Rendered markdown per
    block; click swaps that block to raw source; leaving the block commits,
    re-parses, saves. The title is block 0 and behaves like any block.
 3. **Wiki-links and backlinks** — `[[Title]]` / `[[Title|alias]]` resolve by
    file stem; the Marginalia panel lists notes referencing the current one.
+   Both are **scoped to the note's own vault**: a vault is a self-contained
+   graph and links never cross vaults (as in Obsidian). This keeps a vault
+   portable, which the per-vault sync depends on.
 4. **Server sync (base feature)** — the vault synchronizes against a
    self-hosted server. Requirements:
    - Plain markdown on disk stays the source of truth locally; sync must
      never require a proprietary container format.
    - Sync unit is the individual note file plus book metadata
-     (`folio.json`); moves/renames are tracked, not treated as delete+create
+     (`booklet.json`); moves/renames are tracked, not treated as delete+create
      when avoidable.
    - Offline-first: full functionality without a connection; sync reconciles
      on reconnect.
@@ -43,15 +51,34 @@ Stack: **QtQuick (QML) frontend, pure-Rust backend via Qt Bridges for Rust**
 
 ## Architecture notes (read before changing code)
 
-- `src/library.rs` — vault scan and the **flattened tree**. qtbridge 0.2 has
-  no tree-model trait, so Rust owns the hierarchy and exposes only the
-  visible rows (each with `depth`); expand/collapse is a slot that
-  recomputes the list. Do not attempt a QAbstractItemModel from Rust.
-- `src/note.rs` — block parsing with pulldown-cmark; blocks are byte ranges
-  into the source string. `commit_block` splices the edited slice back,
-  re-parses, writes to disk.
-- `src/links.rs` — on-demand `[[..]]` scan for backlinks. Fine at personal
-  scale; a persistent index is a later optimization, not now.
+- `booklet-core` — Qt-free, unit-tested engine. `Engine` (`engine.rs`) owns a
+  live tree read from disk (disk is the source of truth) and controls
+  persistence. It holds every configured vault but renders only the **active**
+  one: `visible_rows` emits that vault's books at depth 0 via
+  `Vault::append_book_rows`. Non-active vaults are still built so the folders you
+  left open in them survive a switch. `vault.rs` holds the node types behind a
+  shared `Folder` trait — `Vault` → `Book` → `Section`* → `Note` — where each
+  folder **owns its own `expanded` flag** and reads children from disk when
+  opened (so expansion is per-object, never a shared id-keyed set). `config.rs`
+  persists the vault paths, the **active** vault, and the expanded-folder paths
+  (`~/.config/booklet/vaults.json`, an object
+  `{ "vaults": [...], "active": ..., "expanded": [...] }`). `Engine::refresh()` rebuilds from
+  disk preserving open folders — to be driven by a file watcher (via
+  `QmlMethodInvoker`, not yet wired). `src/library.rs` is a thin qtbridge
+  adapter that drives the `Engine` and serializes its rows for QML. qtbridge 0.2
+  has no tree-model trait, so Rust owns the hierarchy and exposes only visible
+  rows (each with `depth`); expand/collapse is a slot. Do not attempt a
+  QAbstractItemModel from Rust.
+- `booklet-core::document` — the block editor model: `Document::open` parses a
+  note into top-level blocks (byte ranges via pulldown-cmark); `commit_block`
+  splices the edited slice back, re-parses, writes to disk; `find_note` resolves
+  `[[wiki-links]]` by file stem across all vaults. Qt-free and unit-tested.
+  `src/note.rs` is a thin qtbridge adapter over it and renders the `booklet://`
+  wiki-link scheme (kept app-side so the core stays scheme-agnostic).
+- `booklet-core::links` — on-demand `[[..]]` scan for backlinks, scoped to a
+  single vault; `booklet_core::vault::vault_of` maps a note path to its vault.
+  Fine at personal scale; a persistent index is a later optimization, not now.
+  `src/links.rs` is a thin qtbridge adapter.
 - Rust <-> QML crosses via **slots and signals with JSON payloads**. This is
   deliberate: the beta's most stable surface. Do not migrate to
   `qtbridge::QListModel` or `qproperty` without checking the current trait
@@ -65,9 +92,14 @@ Stack: **QtQuick (QML) frontend, pure-Rust backend via Qt Bridges for Rust**
   (QML → Rust → QML → same object) panic on the borrow. Never call back into
   the same backend object from inside a `&mut self` slot; emit signals after
   state has settled.
-- `include_bytes_qml!` in `src/main.rs` ships the non-Main QML files via the
-  Qt resource system; its signature is the most likely API to shift between
-  beta releases — verify against the `color_palette` example on upgrade.
+- The QML module lives in `src/booklet/` (a dir named after the crate, so
+  `import booklet` resolves). `src/main.rs` registers each file — including the
+  `qmldir` and `Main.qml` — with `include_bytes_qml!("booklet/<file>",
+  "qt/qml")`, then `add_import_path("qrc:/qt/qml")` and
+  `load_qml_from_file("qrc:/qt/qml/booklet/Main.qml")`. Paths are relative to
+  `src/`, so keep the QML under `src/booklet/` (no `..`). This mirrors the
+  `color_palette` example; `include_bytes_qml!`'s signature is the most likely
+  API to shift between beta releases — re-verify against it on upgrade.
 - Requires Qt >= 6.10, `qmake` in PATH (`QMAKE=qmake6` on Debian/Ubuntu).
   macOS arm64 is an experimental qtbridge target; when something fails only
   on macOS, cross-check on Linux before debugging deeply.

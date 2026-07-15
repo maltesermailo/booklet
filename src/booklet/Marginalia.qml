@@ -9,17 +9,39 @@ Rectangle {
     color: Theme.panel
 
     property var backlinks: []
+    property string noteId: ""
     property string noteTitle: ""
+
+    // The reference marks the link at 24% accent. Qt's rich text wants a solid
+    // colour, so blend it against the card once here.
+    readonly property color markBg:
+        Qt.tint(Theme.page, Qt.rgba(Theme.brass.r, Theme.brass.g, Theme.brass.b, 0.24))
+
+    // Show the snippet as it reads — the link rendered as its text, highlighted —
+    // rather than leaking the [[...]] source into the panel.
+    function markLink(snippet, title) {
+        var escaped = snippet.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        var quoted = title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+        var link = new RegExp("\\[\\[" + quoted + "(?:\\|([^\\]]+))?\\]\\]", "g")
+
+        return escaped.replace(link, function (match, alias) {
+            return "<span style=\"background-color:" + panel.markBg + "\">"
+                 + (alias ? alias : title) + "</span>"
+        })
+    }
 
     Connections {
         target: NoteEditor
+        // The id (absolute path) tells Rust which vault to scan: backlinks
+        // never cross a vault boundary.
         function onNote_opened(id, title) {
+            panel.noteId = id
             panel.noteTitle = title
-            panel.backlinks = JSON.parse(Backlinks.for_note(title))
+            panel.backlinks = JSON.parse(Backlinks.for_note(id, title))
         }
         function onBlocks_changed() {
-            if (panel.noteTitle !== "")
-                panel.backlinks = JSON.parse(Backlinks.for_note(panel.noteTitle))
+            if (panel.noteId !== "")
+                panel.backlinks = JSON.parse(Backlinks.for_note(panel.noteId, panel.noteTitle))
         }
     }
 
@@ -75,7 +97,8 @@ Rectangle {
                         width: parent.width
                     }
                     Text {
-                        text: modelData.snippet
+                        text: panel.markLink(modelData.snippet, panel.noteTitle)
+                        textFormat: Text.RichText
                         color: Theme.text
                         font.family: Theme.body
                         font.pixelSize: 12

@@ -1,0 +1,14 @@
+module booklet
+prefer :/qt/qml/booklet/
+Main 1.0 Main.qml
+TreePane 1.0 TreePane.qml
+EditorView 1.0 EditorView.qml
+Marginalia 1.0 Marginalia.qml
+QuickSwitcher 1.0 QuickSwitcher.qml
+ShelfView 1.0 ShelfView.qml
+TopBar 1.0 TopBar.qml
+Icon 1.0 Icon.qml
+IconButton 1.0 IconButton.qml
+TabStrip 1.0 TabStrip.qml
+StatusBar 1.0 StatusBar.qml
+singleton Theme 1.0 Theme.qml

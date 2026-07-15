@@ -1,0 +1,13 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/fonts">
+        <file alias="EBGaramond.ttf">fonts/EBGaramond.ttf</file>
+        <file alias="AlegreyaSans-Regular.ttf">fonts/AlegreyaSans-Regular.ttf</file>
+        <file alias="AlegreyaSans-Medium.ttf">fonts/AlegreyaSans-Medium.ttf</file>
+        <file alias="Spectral-Regular.ttf">fonts/Spectral-Regular.ttf</file>
+        <file alias="Spectral-Italic.ttf">fonts/Spectral-Italic.ttf</file>
+        <file alias="Spectral-Bold.ttf">fonts/Spectral-Bold.ttf</file>
+        <file alias="Spectral-BoldItalic.ttf">fonts/Spectral-BoldItalic.ttf</file>
+        <file alias="JetBrainsMono.ttf">fonts/JetBrainsMono.ttf</file>
+    </qresource>
+</RCC>

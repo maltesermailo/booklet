@@ -1,176 +1,259 @@
-//! Vault scanning and the flattened tree model.
+//! qtbridge adapter over the core [`Engine`].
 //!
-//! qtbridge 0.2 has no tree-model trait (only QListModel/QTableModel), so the
-//! tree is flattened in Rust: we keep the full hierarchy implicit on disk and
-//! emit only the *visible* rows, each carrying a `depth` for indentation.
-//! Expand/collapse is a slot call that recomputes the list. This also handles
-//! infinite nesting for free — it is just recursion depth.
+//! The engine (in `booklet-core`) owns the library state and its persistence;
+//! this type is a thin Qt shell that drives the engine, serializes its output
+//! for QML, surfaces I/O errors, and keeps a file watcher pointed at the
+//! configured vaults.
 
-use qtbridge::qobject;
-use serde::Serialize;
-use std::collections::HashSet;
+use booklet_core::Engine;
+use notify::{RecommendedWatcher, RecursiveMode, Watcher};
+use qtbridge::{qobject, QObjectHolder};
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Clone)]
-pub struct Row {
-    pub id: String,   // vault-relative path; unique, stable identifier
-    pub title: String,
-    pub depth: u32,
-    pub kind: String, // "book" | "section" | "note"
-    pub color: String, // binding color hex; books only
-    pub expanded: bool,
-    pub has_children: bool,
-}
-
-#[derive(Serialize)]
-pub struct BookInfo {
-    pub id: String,
-    pub title: String,
-    pub color: String,
-    pub shelf: String,
-    pub note_count: usize,
-}
-
-#[derive(Default)]
 pub struct Library {
-    vault: PathBuf,
-    expanded: HashSet<String>,
+    engine: Engine,
+    /// Kept alive to keep watching; replacing it drops the previous watches.
+    watcher: Option<RecommendedWatcher>,
+}
+
+impl Default for Library {
+    fn default() -> Self {
+        Self {
+            engine: Engine::new(default_config_path()),
+            watcher: None,
+        }
+    }
 }
 
 #[qobject(Singleton)]
 impl Library {
+    /// Loads the persisted vault list. Call once at startup.
     #[qslot]
-    fn open_vault(&mut self, path: String) {
-        self.vault = PathBuf::from(path);
-        self.expanded.clear();
+    fn load(&mut self) {
+        if let Err(error) = self.engine.load() {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not read vault list: {error}");
+        }
+
+        self.watch_vaults();
         self.tree_changed();
     }
 
     #[qslot]
-    fn vault_path(&self) -> String {
-        self.vault.to_string_lossy().into_owned()
+    fn add_vault(&mut self, path: String) {
+        if let Err(error) = self.engine.add_vault(PathBuf::from(path)) {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not save vault list: {error}");
+        }
+
+        self.watch_vaults();
+        self.tree_changed();
     }
 
-    /// Currently visible rows as JSON.
-    /// TODO(beta -> stable): graduate to qtbridge::QListModel once the trait
-    /// API settles, so toggles become fine-grained row inserts/removals
-    /// instead of a full rebuild. See minimal_app in qt/qtbridge-rust.
+    #[qslot]
+    fn remove_vault(&mut self, path: String) {
+        if let Err(error) = self.engine.remove_vault(Path::new(&path)) {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not save vault list: {error}");
+        }
+
+        self.watch_vaults();
+        self.tree_changed();
+    }
+
+    /// Rebuilds the tree from disk, preserving open folders. Invoked by the file
+    /// watcher whenever a vault changes underneath us.
+    #[qslot]
+    fn refresh(&mut self) {
+        self.engine.refresh();
+
+        self.tree_changed();
+    }
+
     #[qslot]
     fn visible_rows(&self) -> String {
-        let mut rows = Vec::new();
-        self.walk(&self.vault.clone(), 0, &mut rows);
-        serde_json::to_string(&rows).unwrap_or_else(|_| "[]".into())
+        // Rows hold only strings, numbers, and bools, so serialization cannot fail.
+        serde_json::to_string(&self.engine.visible_rows()).expect("visible rows serialize to JSON")
     }
 
     #[qslot]
     fn toggle(&mut self, id: String) {
-        if !self.expanded.remove(&id) {
-            self.expanded.insert(id);
+        if let Err(error) = self.engine.toggle(Path::new(&id)) {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not save expansion state: {error}");
         }
+
         self.tree_changed();
     }
 
-    /// Books for the shelf view: title, binding, shelf label, note count
-    /// (note count drives spine width/height).
     #[qslot]
     fn books(&self) -> String {
-        let mut out = Vec::new();
-        let Ok(entries) = std::fs::read_dir(&self.vault) else {
-            return "[]".into();
-        };
-        for e in entries.flatten() {
-            let p = e.path();
-            if !p.is_dir() {
-                continue;
-            }
-            let (color, shelf) = book_meta(&p);
-            let note_count = walkdir::WalkDir::new(&p)
-                .into_iter()
-                .flatten()
-                .filter(|x| x.path().extension().is_some_and(|ext| ext == "md"))
-                .count();
-            out.push(BookInfo {
-                id: rel_id(&self.vault, &p),
-                title: e.file_name().to_string_lossy().into_owned(),
-                color,
-                shelf,
-                note_count,
-            });
+        // Same as visible_rows: only plain fields, so serialization cannot fail.
+        serde_json::to_string(&self.engine.books()).expect("books serialize to JSON")
+    }
+
+    /// Every note in the active vault, for the quick switcher.
+    #[qslot]
+    fn notes(&self) -> String {
+        serde_json::to_string(&self.engine.notes()).expect("notes serialize to JSON")
+    }
+
+    /// Every configured vault, for the vault menu.
+    #[qslot]
+    fn vaults(&self) -> String {
+        serde_json::to_string(&self.engine.vaults()).expect("vaults serialize to JSON")
+    }
+
+    /// The vault currently being read, or "" if none.
+    #[qslot]
+    fn active_vault(&self) -> String {
+        self.engine
+            .active_path()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Switches which vault is being read.
+    #[qslot]
+    fn set_active(&mut self, id: String) {
+        if let Err(error) = self.engine.set_active(Path::new(&id)) {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not save the active vault: {error}");
         }
-        serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+
+        self.watch_vaults();
+        self.tree_changed();
+    }
+
+    /// Creates a note called `name` inside `parent_id`. Returns its path, or ""
+    /// if it could not be created.
+    #[qslot]
+    fn create_note(&mut self, parent_id: String, name: String) -> String {
+        let created = self.engine.create_note(Path::new(&parent_id), &name);
+        self.tree_changed();
+
+        match created {
+            Ok(path) => path.to_string_lossy().into_owned(),
+            Err(error) => {
+                // TODO (M3): surface this in the UI instead of the console.
+                eprintln!("booklet: could not create note '{name}': {error}");
+                String::new()
+            }
+        }
+    }
+
+    /// Creates a section called `name` inside `parent_id`.
+    #[qslot]
+    fn create_section(&mut self, parent_id: String, name: String) {
+        if let Err(error) = self.engine.create_section(Path::new(&parent_id), &name) {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not create section '{name}': {error}");
+        }
+
+        self.tree_changed();
+    }
+
+    /// Renames the note or section at `id`. Returns its new path, or "" if it
+    /// could not be renamed.
+    #[qslot]
+    fn rename(&mut self, id: String, name: String) -> String {
+        let renamed = self.engine.rename(Path::new(&id), &name);
+        self.tree_changed();
+
+        match renamed {
+            Ok(path) => path.to_string_lossy().into_owned(),
+            Err(error) => {
+                // TODO (M3): surface this in the UI instead of the console.
+                eprintln!("booklet: could not rename to '{name}': {error}");
+                String::new()
+            }
+        }
+    }
+
+    /// Moves the note or section at `id` to the system Trash. Named for QML's
+    /// sake — `delete` is a JavaScript keyword.
+    #[qslot]
+    fn delete_entry(&mut self, id: String) {
+        if let Err(error) = self.engine.delete(Path::new(&id)) {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not delete '{id}': {error}");
+        }
+
+        self.tree_changed();
+    }
+
+    /// Closes every open folder in the active vault.
+    #[qslot]
+    fn collapse_all(&mut self) {
+        if let Err(error) = self.engine.collapse_all() {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not save expansion state: {error}");
+        }
+
+        self.tree_changed();
+    }
+
+    /// Opens every folder down to `id` so it shows in the tree. The shelf view
+    /// uses this to jump to a book.
+    #[qslot]
+    fn reveal(&mut self, id: String) {
+        if let Err(error) = self.engine.reveal(Path::new(&id)) {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not save expansion state: {error}");
+        }
+
+        self.tree_changed();
     }
 
     // qtbridge 0.2 requires a signal's receiver to be `&mut self`, even though
     // emitting it does not mutate our state.
     #[qsignal]
     fn tree_changed(&mut self);
+}
 
-    fn walk(&self, dir: &Path, depth: u32, out: &mut Vec<Row>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        let mut entries: Vec<_> = entries.flatten().collect();
-        // Directories first, then files; alphabetical within each group.
-        entries.sort_by_key(|e| (e.path().is_file(), e.file_name()));
-
-        for e in entries {
-            let p = e.path();
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.starts_with('.') || name == "folio.json" {
-                continue;
+impl Library {
+    /// (Re)starts watching the active vault — the only one whose tree is on
+    /// screen. The watcher callback runs on its own thread, so
+    /// `QmlMethodInvoker` is the only safe way back in: it schedules `refresh`
+    /// on the Qt event loop rather than touching this object directly.
+    fn watch_vaults(&mut self) {
+        let invoker = self.get_qml_method_invoker();
+        // Deliberately undebounced: `refresh` is idempotent and re-reads the
+        // whole tree, so the final event always leaves us consistent. A
+        // leading-edge throttle would risk dropping that final event and
+        // leaving a stale tree.
+        let handler = move |result: notify::Result<notify::Event>| {
+            if result.is_ok() {
+                invoker.invoke_method("refresh");
             }
-            let id = rel_id(&self.vault, &p);
+        };
 
-            if p.is_dir() {
-                let kind = if depth == 0 { "book" } else { "section" };
-                let expanded = self.expanded.contains(&id);
-                let color = if depth == 0 { book_meta(&p).0 } else { String::new() };
-                out.push(Row {
-                    id: id.clone(),
-                    title: name,
-                    depth,
-                    kind: kind.into(),
-                    color,
-                    expanded,
-                    has_children: true,
-                });
-                if expanded {
-                    // Infinite nesting is just this recursion.
-                    self.walk(&p, depth + 1, out);
-                }
-            } else if p.extension().is_some_and(|x| x == "md") {
-                out.push(Row {
-                    id,
-                    title: p
-                        .file_stem()
-                        .map(|s| s.to_string_lossy().into_owned())
-                        .unwrap_or(name),
-                    depth,
-                    kind: "note".into(),
-                    color: String::new(),
-                    expanded: false,
-                    has_children: false,
-                });
+        let mut watcher = match notify::recommended_watcher(handler) {
+            Ok(watcher) => watcher,
+            Err(error) => {
+                eprintln!("booklet: could not start the file watcher: {error}");
+                return;
+            }
+        };
+
+        if let Some(vault) = self.engine.active_path() {
+            if let Err(error) = watcher.watch(vault, RecursiveMode::Recursive) {
+                eprintln!("booklet: could not watch '{}': {error}", vault.display());
             }
         }
+
+        self.watcher = Some(watcher);
     }
 }
 
-fn rel_id(vault: &Path, p: &Path) -> String {
-    p.strip_prefix(vault)
-        .unwrap_or(p)
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// Reads folio.json in a book folder: { "color": "#3C5240", "shelf": "Work and Study" }
-fn book_meta(book_dir: &Path) -> (String, String) {
-    let v: Option<serde_json::Value> = std::fs::read_to_string(book_dir.join("folio.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok());
-    match v {
-        Some(v) => (
-            v["color"].as_str().unwrap_or("#4A5560").to_string(),
-            v["shelf"].as_str().unwrap_or("Library").to_string(),
-        ),
-        None => ("#4A5560".into(), "Library".into()),
+/// Where the vault list is stored. Defaults to ~/.config/booklet/vaults.json —
+/// plain JSON the user can inspect and edit. Set BOOKLET_CONFIG to point at
+/// another location so a different app or profile can reuse the same engine.
+pub(crate) fn default_config_path() -> PathBuf {
+    if let Some(override_path) = std::env::var_os("BOOKLET_CONFIG") {
+        return PathBuf::from(override_path);
     }
+
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    home.join(".config/booklet/vaults.json")
 }

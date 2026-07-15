@@ -1,16 +1,17 @@
-//! Wiki-link scan for the Marginalia (backlinks) panel.
+//! qtbridge adapter for the Marginalia (backlinks) panel.
 //!
-//! Deliberately simple for a personal-scale vault: scan every .md file for
-//! [[Title]] occurrences on demand. If the vault grows large, replace with a
-//! persistent index rebuilt on save (and later SQLite FTS5 for full-text
-//! quick-switcher search).
+//! The scan lives in `booklet_core::links`; this type holds the configured
+//! vaults and serializes the results for QML.
 
+use booklet_core::{config, links, vault};
 use qtbridge::qobject;
 use serde::Serialize;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+/// A backlink as handed to QML. `source_id` is an absolute path, which is what
+/// `NoteEditor.open` expects.
 #[derive(Serialize)]
-struct Backlink {
+struct BacklinkView {
     source_id: String,
     source_title: String,
     snippet: String,
@@ -18,67 +19,43 @@ struct Backlink {
 
 #[derive(Default)]
 pub struct Backlinks {
-    vault: PathBuf,
+    vaults: Vec<PathBuf>,
 }
 
 #[qobject(Singleton)]
 impl Backlinks {
+    /// Loads the configured vaults so backlinks span all of them.
     #[qslot]
-    fn set_vault(&mut self, path: String) {
-        self.vault = PathBuf::from(path);
+    fn load(&mut self) {
+        self.vaults = match config::load(&crate::library::default_config_path()) {
+            Ok(config) => config.vaults,
+            Err(error) => {
+                // TODO (M3): surface this in the UI instead of the console.
+                eprintln!("booklet: could not read vault list: {error}");
+                Vec::new()
+            }
+        };
     }
 
-    /// All notes containing [[title]] (or [[title|alias]]), as JSON.
+    /// Notes containing [[title]] (or [[title|alias]]), as JSON. `id` is the
+    /// note's absolute path; the scan is scoped to that note's own vault, so
+    /// backlinks never cross a vault boundary.
     #[qslot]
-    fn for_note(&self, title: String) -> String {
-        if title.is_empty() {
+    fn for_note(&self, id: String, title: String) -> String {
+        let Some(vault) = vault::vault_of(&self.vaults, Path::new(&id)) else {
             return "[]".into();
-        }
-        let needle_plain = format!("[[{title}]]");
-        let needle_alias = format!("[[{title}|");
-        let mut out = Vec::new();
+        };
 
-        for entry in walkdir::WalkDir::new(&self.vault).into_iter().flatten() {
-            let p = entry.path();
-            if !p.extension().is_some_and(|x| x == "md") {
-                continue;
-            }
-            let Ok(text) = std::fs::read_to_string(p) else { continue };
-            let hit = text.find(&needle_plain).or_else(|| text.find(&needle_alias));
-            let Some(pos) = hit else { continue };
+        let views: Vec<BacklinkView> = links::backlinks_to(vault, &title)
+            .into_iter()
+            .map(|backlink| BacklinkView {
+                source_id: backlink.source.to_string_lossy().into_owned(),
+                source_title: backlink.title,
+                snippet: backlink.snippet,
+            })
+            .collect();
 
-            let source_title = p
-                .file_stem()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or_default();
-            if source_title == title {
-                continue; // a note is not its own marginalia
-            }
-
-            out.push(Backlink {
-                source_id: p
-                    .strip_prefix(&self.vault)
-                    .unwrap_or(p)
-                    .to_string_lossy()
-                    .into_owned(),
-                source_title,
-                snippet: snippet_around(&text, pos),
-            });
-        }
-        serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+        // Backlinks hold only strings, so serialization cannot fail.
+        serde_json::to_string(&views).expect("backlinks serialize to JSON")
     }
-}
-
-/// A short context window around the match, ellipsized, on char boundaries.
-fn snippet_around(text: &str, pos: usize) -> String {
-    let mut start = pos.saturating_sub(60);
-    while start > 0 && !text.is_char_boundary(start) {
-        start -= 1;
-    }
-    let mut end = (pos + 90).min(text.len());
-    while end < text.len() && !text.is_char_boundary(end) {
-        end += 1;
-    }
-    let core = text[start..end].replace('\n', " ");
-    format!("…{}…", core.trim())
 }

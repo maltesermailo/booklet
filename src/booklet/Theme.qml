@@ -70,9 +70,22 @@ QtObject {
     readonly property color ember:       p.link        // no changes
     readonly property color activePill:  p.activePill
 
-    // Binding colors are per-book data (folio.json), not theme.
+    // Binding colors are per-book data (booklet.json), not theme.
     readonly property var bindings: ["#7C3128", "#2F3E5C", "#3C5240",
                                      "#A8842C", "#55364F", "#4A5560"]
+
+    // Bundled OFL fonts (see COPYRIGHT.md), compiled into qrc by build.rs.
+    // Loading them registers the families by name, so components keep using the
+    // plain family strings below. Spectral carries the body text, so its italic
+    // and bold faces are bundled too rather than letting Qt synthesize them.
+    readonly property FontLoader displayFace:        FontLoader { source: "qrc:/fonts/EBGaramond.ttf" }
+    readonly property FontLoader uiFace:             FontLoader { source: "qrc:/fonts/AlegreyaSans-Regular.ttf" }
+    readonly property FontLoader uiMediumFace:       FontLoader { source: "qrc:/fonts/AlegreyaSans-Medium.ttf" }
+    readonly property FontLoader bodyFace:           FontLoader { source: "qrc:/fonts/Spectral-Regular.ttf" }
+    readonly property FontLoader bodyItalicFace:     FontLoader { source: "qrc:/fonts/Spectral-Italic.ttf" }
+    readonly property FontLoader bodyBoldFace:       FontLoader { source: "qrc:/fonts/Spectral-Bold.ttf" }
+    readonly property FontLoader bodyBoldItalicFace: FontLoader { source: "qrc:/fonts/Spectral-BoldItalic.ttf" }
+    readonly property FontLoader monoFace:           FontLoader { source: "qrc:/fonts/JetBrainsMono.ttf" }
 
     readonly property string display: "EB Garamond"
     readonly property string ui:      "Alegreya Sans"

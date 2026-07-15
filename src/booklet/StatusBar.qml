@@ -1,0 +1,47 @@
+import QtQuick
+import booklet
+
+// A slim footer: which vault you are in, and how much is in it. The saved/unsaved
+// indicator joins this in 5e, once the editor reports it.
+Rectangle {
+    id: bar
+
+    height: 22
+    color: Theme.sidebar
+
+    property string vaultName: ""
+    property int noteCount: 0
+
+    function reload() {
+        var vaults = JSON.parse(Library.vaults())
+        var active = vaults.find(function (vault) { return vault.active })
+        bar.vaultName = active ? active.name : ""
+        bar.noteCount = JSON.parse(Library.notes()).length
+    }
+
+    Component.onCompleted: reload()
+
+    Connections {
+        target: Library
+        function onTree_changed() { bar.reload() }
+    }
+
+    Rectangle {
+        anchors.top: parent.top
+        width: parent.width
+        height: 1
+        color: Theme.sidebarLine
+    }
+
+    Text {
+        anchors.verticalCenter: parent.verticalCenter
+        anchors.left: parent.left
+        anchors.leftMargin: 14
+        text: bar.vaultName === ""
+              ? "No vault"
+              : bar.vaultName + " · " + bar.noteCount + (bar.noteCount === 1 ? " note" : " notes")
+        color: Theme.textSoft
+        font.family: Theme.ui
+        font.pixelSize: 11
+    }
+}
