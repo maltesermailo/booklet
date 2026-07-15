@@ -1,109 +1,102 @@
 # Booklet — Roadmap
 
-Milestones derived from `CLAUDE.md` and `README.md`. Suggested order:
-M0 → M1 → M2 → M3 → M4. The scaffold rewrite (M1) sits right after
-foundation-verification so every later feature is written to the idioms from
-the start.
+**Direction:** build a Qt-free core **library** that owns notes and syncing,
+and grow it incrementally with the app layered on top. The QtQuick/qtbridge
+binary stays a thin frontend that delegates to the library; every domain
+capability lands in the library first (with unit tests, no Qt needed to run
+them) and is wired into the app as it becomes available.
 
-## M0 — Verify the beta foundation
+## Why a library first
 
-The whole stack rests on `qtbridge 0.2`, which CLAUDE.md and the README both
-flag as the most volatile surface. Nail this down before any feature work.
+- The domain logic (vault model, block parsing, links, sync/conflict rules)
+  has nothing to do with Qt and is far easier to test without it.
+- The scaffold currently couples that logic directly to qtbridge
+  (`library.rs` / `note.rs` / `links.rs` are `#[qobject]` types). Pulling the
+  logic into `booklet-core` leaves the app with thin adapters that translate
+  between QML and the library.
+- Sync is the largest piece and the most valuable to have covered by tests
+  before any UI depends on it.
 
-- [ ] Confirm `cargo run -- "$(pwd)/vault"` builds and launches on macOS arm64
-      (an *experimental* qtbridge target).
-- [ ] Verify `include_bytes_qml!` (`src/main.rs`) against the `color_palette`
-      example in qt/qtbridge-rust.
-- [ ] Verify `#[qobject(Singleton)]` / `#[qslot]` / `#[qsignal]` against
-      `minimal_app`.
-- [ ] Verify `QmlMethodInvoker` (for later off-UI-thread sync) against
-      `host_monitor`.
-- [ ] **Exit:** sample vault opens, tree renders, a note opens, a block edits
-      and saves. Record any API drift in CLAUDE.md's beta-constraints section.
+## Foundation status (from the M0 build bring-up)
 
-## M1 — Rewrite the scaffold to follow CLAUDE.md idioms
+- Builds and launches with Qt 6.11.1 at `/Volumes/Daten/Qt/6.11.1/macos`
+  (`QMAKE`, `PATH`, `DYLD_FRAMEWORK_PATH` pointed there).
+- qtbridge 0.2 API findings already applied: `#[qsignal]` receivers must be
+  `&mut self`; `#[qslot]`/`#[qsignal]` are consumed by `#[qobject]` and must
+  not be imported; plain helper methods may stay in the `#[qobject]` impl.
+- **Open item:** QML component registration — `Main.qml` fails with
+  `TreePane is not a type`. `include_bytes_qml` only exposes files under
+  `qrc:/`; the `booklet` module still needs a discoverable `qmldir`. Resolve
+  when the app frontend is next touched (M4), not before.
 
-The scaffold works but violates several binding rules. Fixes grouped by rule.
+## M1 — `booklet-core`: notes domain (Qt-free, incremental)
 
-### Rule 7 — never swallow errors (most serious)
-- [ ] `note.rs` — `let _ = std::fs::write(...)` silently discards **save
-      failures**. Surface via a `save_failed(reason)` signal + minimal QML.
-- [ ] `note.rs` — `read_to_string(...).unwrap_or_default()` turns an
-      unreadable note into a silently-empty editor that then overwrites the
-      file on commit. Distinguish "empty note" from "couldn't read"; surface
-      read failures to the UI too.
-- [ ] `library.rs` / `note.rs` / `links.rs` — the
-      `serde_json::to_string(...).unwrap_or_else(|_| "[]")` sites mask
-      serialization bugs as empty results. Use `.expect()` with a
-      why-it-can't-fail message, or propagate.
-- [ ] `library.rs` — `let Ok(entries) = read_dir(..) else { return }`: a
-      permission error yields a silently-empty tree. Decide log-and-skip vs.
-      surface.
+New crate `booklet-core` in the workspace holding the note logic, moved out of
+the qtbridge types. Each step ships with unit tests and a thin app adapter.
 
-### Rule 6 — no abbreviations (except id/url/db)
-- [ ] Rename single-letter bindings (`e`, `p`, `v`, `r`, `c`, `ev`, `hit`)
-      across `library.rs` / `note.rs` to descriptive names.
+- [ ] **1a — Crate + vault model.** Move the vault scan and flattened tree out
+      of `src/library.rs` into `booklet-core` (plain structs/functions, no
+      qtbridge). App keeps a `#[qobject]` adapter that calls into it.
+- [ ] **1b — Block parsing.** Move the pulldown-cmark block/byte-range logic
+      out of `src/note.rs`. Unit-test block boundaries and `commit_block`
+      splice/re-parse round-trips on fixture notes.
+- [ ] **1c — Links/backlinks.** Move the `[[..]]` scan out of `src/links.rs`.
+      Unit-test resolution by file stem and alias handling.
+- [ ] **Exit:** all note behavior lives in `booklet-core` with tests; the app
+      builds against it; behavior unchanged from today.
 
-### Global preference — blank lines between logical sections
-- [ ] Break up dense functions (`library.rs::books`, `note.rs::open`,
-      `note.rs::commit_block`) into setup → work → return groups.
+## M2 — `booklet-core`: syncing (Qt-free, incremental)
 
-### Efficiency / correctness
-- [ ] `note.rs::rewrite_wikilinks` recompiles its regex on **every block
-      render**. Hoist to a `LazyLock<Regex>` (also removes an `.unwrap()`).
+Sync as a library module first, tested without the UI. Constraints from
+CLAUDE.md: plain markdown stays the local source of truth, offline-first,
+per-file sync unit, last-write-wins with conflict copies, no CRDT.
 
-### Latent re-entrancy bug (beta constraint)
-- [ ] `note.rs::open` emits `note_opened` / `blocks_changed` while the
-      `&mut self` borrow is held; QML handlers call back into `NoteEditor`
-      (the `QML → Rust → QML → same object` borrow panic). Restructure so
-      signals fire after the borrow is released. Depends on borrow semantics
-      verified in M0.
+- [ ] **2a — Local change tracking.** Detect created/modified/moved/renamed
+      notes and `folio.json`; prefer move/rename over delete+create. Pure
+      library state + tests.
+- [ ] **2b — Conflict rules.** Last-write-wins per file; losing copy preserved
+      as `Note (conflict YYYY-MM-DD).md`. Unit-test the resolution matrix.
+- [ ] **2c — `booklet-sync-server` crate.** Minimal HTTPS API: per-device
+      token auth, per-file get/put with version metadata, list/since.
+- [ ] **2d — Client sync engine.** Wire 2a/2b against the server; offline
+      reconcile on reconnect. Integration-test client↔server without the UI.
+- [ ] **Exit:** two clients reconcile through the server with conflict copies,
+      all verified by tests before any UI wiring.
 
-### Comments
-- [ ] Audit for any "what" comments introduced during the rewrite; keep only
-      "why".
-
-- [ ] **Exit:** behavior identical, no silent `let _ =` / `unwrap_or_default`
-      on I/O, failed save/read visible in the UI, clean `cargo clippy`,
-      re-entrancy path proven safe.
-
-## M2 — Complete the core reading/writing UX
-
-Features listed as present-or-stubbed but not wired.
-
-- [ ] **Fonts** — `Theme.qml` names EB Garamond / Alegreya Sans / Spectral /
-      JetBrains Mono, but nothing loads them. Add `FontLoader` from bundled
-      resources.
-- [ ] **Create-note-on-unresolved-link** — `NoteEditor.link_unresolved(title)`
-      fires but nothing consumes it. Create the `.md` and open it.
-- [ ] **Books / shelf view** — `Library.books()` has no QML consumer. Build
-      the shelf view.
-- [ ] **Quick switcher (⌘K)** — flatten the note list from `Library`, add a
-      `Popup` + filter.
-
-## M3 — Server sync (base feature, currently missing)
-
-Largest chunk. Respect CLAUDE.md constraints: plain markdown stays the local
-source of truth, offline-first, per-file sync unit, last-write-wins with
-conflict copies, engine off the UI thread, HTTPS + per-device token.
-
-- [ ] **3a** — `booklet-sync-server` crate in the workspace. Minimal HTTPS
-      API: per-device token auth, per-file get/put with version metadata,
-      list/since.
-- [ ] **3b** — Client sync engine off the UI thread (tokio), notifying QML via
-      `QmlMethodInvoker`. Track moves/renames rather than delete+create where
-      possible.
-- [ ] **3c** — Conflict handling: last-write-wins per file, losing copy kept
-      as `Note (conflict YYYY-MM-DD).md`. **No CRDT** — out of scope until a
-      demonstrated need.
-- [ ] **3d** — Offline reconciliation on reconnect.
-
-Recommend a short design note + one clarifying pass before 3a; the server
+Recommend a short design note + one clarifying pass before 2c — the server
 shape is underspecified in the current docs.
 
-## M4 — Polish & hardening
+## M3 — App adapters follow CLAUDE.md idioms
 
-- [ ] Persistent link index if/when the on-demand scan (`links.rs`) gets slow
-      — CLAUDE.md marks this a *later* optimization (YAGNI until measured).
-- [ ] Graduate the two hot lists to `qtbridge::QListModel` **only after** the
-      trait API settles (verify the trait API first).
+With the logic in the library, the qtbridge layer becomes thin adapters.
+Apply the idiom fixes here (they were the original scaffold-rewrite items):
+
+- [ ] **Never swallow errors (Rule 7).** Surface failures the library returns
+      via signals + minimal QML — notably failed save/read
+      (`save_failed(reason)` / `read_failed`), which the scaffold currently
+      drops with `let _ = fs::write` and `unwrap_or_default`. *(User decision:
+      signals + UI, not just propagate/log.)*
+- [ ] **No abbreviations (Rule 6).** Any short bindings surviving into the
+      adapters get descriptive names.
+- [ ] **Blank lines between logical sections** in adapter methods.
+- [ ] **Efficiency.** Hoist the `rewrite_wikilinks` regex to a `LazyLock`
+      (once it moves to the display/adapter layer).
+- [ ] **Re-entrancy.** Confirm signals fire after the `&mut` borrow settles —
+      `NoteEditor::open` emits while borrowed; verify against qtbridge's
+      documented borrow-caching rule so QML handlers can't re-borrow-panic.
+
+## M4 — Complete the core reading/writing UX
+
+- [ ] **QML module registration** — resolve the open M0 item (`qmldir` for the
+      `booklet` module) so `TreePane`/`EditorView`/`Marginalia` load.
+- [ ] **Fonts** — wire `FontLoader` for EB Garamond / Alegreya Sans /
+      Spectral / JetBrains Mono.
+- [ ] **Create-note-on-unresolved-link** — consume `link_unresolved(title)`.
+- [ ] **Books / shelf view** — build a consumer for `Library.books()`.
+- [ ] **Quick switcher (⌘K)** — flatten the note list, `Popup` + filter.
+
+## M5 — Polish & hardening
+
+- [ ] Persistent link index if the on-demand scan gets slow (measure first).
+- [ ] Graduate the hot lists to `qtbridge::QListModel` once the trait API
+      settles.

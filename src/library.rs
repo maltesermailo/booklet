@@ -6,7 +6,7 @@
 //! Expand/collapse is a slot call that recomputes the list. This also handles
 //! infinite nesting for free — it is just recursion depth.
 
-use qtbridge::{qobject, qsignal, qslot};
+use qtbridge::qobject;
 use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -100,8 +100,10 @@ impl Library {
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
     }
 
+    // qtbridge 0.2 requires a signal's receiver to be `&mut self`, even though
+    // emitting it does not mutate our state.
     #[qsignal]
-    fn tree_changed(&self);
+    fn tree_changed(&mut self);
 
     fn walk(&self, dir: &Path, depth: u32, out: &mut Vec<Row>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };

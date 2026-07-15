@@ -9,7 +9,7 @@
 //! markdown like any other block.
 
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
-use qtbridge::{qobject, qsignal, qslot};
+use qtbridge::qobject;
 use serde::Serialize;
 use std::ops::Range;
 use std::path::PathBuf;
@@ -123,15 +123,15 @@ impl NoteEditor {
     }
 
     #[qsignal]
-    fn blocks_changed(&self);
+    fn blocks_changed(&mut self);
 
     #[qsignal]
-    fn note_opened(&self, id: String, title: String);
+    fn note_opened(&mut self, id: String, title: String);
 
     /// Emitted when a wiki-link points at a note that does not exist yet.
     /// Hook note creation here later.
     #[qsignal]
-    fn link_unresolved(&self, title: String);
+    fn link_unresolved(&mut self, title: String);
 
     /// Compute top-level block boundaries with byte offsets — this is what
     /// makes per-block click-to-reveal-source possible.

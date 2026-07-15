@@ -5,7 +5,7 @@
 //! persistent index rebuilt on save (and later SQLite FTS5 for full-text
 //! quick-switcher search).
 
-use qtbridge::{qobject, qslot};
+use qtbridge::qobject;
 use serde::Serialize;
 use std::path::PathBuf;
 
