@@ -199,10 +199,23 @@ ApplicationWindow {
             Layout.fillHeight: true
             orientation: Qt.Horizontal
 
+            // The reference's rule between panes is 1px and stays 1px — but that
+            // is a width to look at, not one to hit, and Qt takes a handle's
+            // grab area from the handle itself (its own docs use 4). The right
+            // handle had it worse than the left: the editor's scrollbar sits
+            // hard against it and takes the presses aimed at it. The mask widens
+            // the hit area alone, so the hairline is untouched.
             handle: Rectangle {
+                id: splitHandle
                 implicitWidth: 1
                 color: SplitHandle.pressed || SplitHandle.hovered
                        ? Theme.brass : Theme.sidebarLine
+
+                containmentMask: Item {
+                    x: -4
+                    width: 9
+                    height: splitHandle.height
+                }
             }
 
             TreePane {

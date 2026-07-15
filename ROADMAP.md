@@ -59,26 +59,220 @@ the qtbridge types. Each step ships with unit tests and a thin app adapter.
       passing); the app builds against it and is a thin adapter layer;
       workspace clippy is clean.
 
-## M2 — `booklet-core`: syncing (Qt-free, incremental)
+## M2 — Syncing (`booklet-core` + two new crates)
 
-Sync as a library module first, tested without the UI. Constraints from
-CLAUDE.md: plain markdown stays the local source of truth, offline-first,
-per-file sync unit, last-write-wins with conflict copies, no CRDT.
+Sync as a library module first, tested without the UI — which holds for 2a–2d,
+and cannot hold for 2e. Constraints kept from CLAUDE.md: plain markdown stays the
+**local** source of truth, offline-first, the sync unit is the note file plus
+`booklet.json`.
 
-- [ ] **2a — Local change tracking.** Detect created/modified/moved/renamed
-      notes and `booklet.json`; prefer move/rename over delete+create. Pure
-      library state + tests.
-- [ ] **2b — Conflict rules.** Last-write-wins per file; losing copy preserved
-      as `Note (conflict YYYY-MM-DD).md`. Unit-test the resolution matrix.
-- [ ] **2c — `booklet-sync-server` crate.** Minimal HTTPS API: per-device
-      token auth, per-file get/put with version metadata, list/since.
-- [ ] **2d — Client sync engine.** Wire 2a/2b against the server; offline
-      reconcile on reconnect. Integration-test client↔server without the UI.
-- [ ] **Exit:** two clients reconcile through the server with conflict copies,
-      all verified by tests before any UI wiring.
+**The conflict strategy is now merge-based, and CLAUDE.md was amended to match.**
+It read "last-write-wins per file … CRDT/merge-based syncing is explicitly out of
+scope — do not build toward it speculatively", and this milestone builds squarely
+toward it. Decided with the user with the cost on the table: Obsidian merges
+markdown with Google's diff-match-patch and only offers conflict files as an
+opt-out, and a note that silently loses an edit is worse than one that
+occasionally merges clumsily. **Conflict copies did not die — they narrowed** to
+the one case no merge can serve (2b).
 
-Recommend a short design note + one clarifying pass before 2c — the server
-shape is underspecified in the current docs.
+Everything below was settled in a design pass. Where a decision went against the
+recommendation it says so and says why — **those are the ones to revisit first if
+this milestone hurts.**
+
+### 2a — Local change tracking
+
+- [ ] **A note is its path; a move is inferred from content.** A delete and a
+      create in one sync window whose hashes match is recorded as a move, which is
+      what CLAUDE.md's "when avoidable" asks for. Nothing is written into the
+      markdown: a UUID in frontmatter would survive rename+edit, but the editor is
+      a live-preview surface with no frontmatter support, so the id would render
+      as literal text atop every note. **Known gap:** a note renamed *and* edited
+      offline degrades to delete+create. That is the case "when avoidable"
+      concedes.
+- [ ] **State lives in `.booklet/` inside the vault** — manifest, server binding,
+      cursor, vault id. Obsidian's `.obsidian/` precedent. It travels with the
+      vault, so a copied or restored folder keeps its binding, and the **vault id
+      is how a cloned folder knows which server vault it is** rather than guessing
+      from an absolute path that differs per machine. All of it is derived: delete
+      `.booklet/` and you pay a rescan, nothing more. **`.booklet/` never syncs** —
+      it is device-local by definition.
+- [ ] **Manifest is plain JSON**, written and renamed atomically, exactly as
+      `config.rs` already does. No new dependency, readable by a person; a few
+      thousand notes is a few hundred KB.
+- [ ] **mtime+size gate, hash decides.** Hash only what the gate flags, so a quiet
+      vault costs one stat per file, and a touched-but-unchanged file never
+      uploads. A backup restore resets mtimes and triggers a rehash — correct, and
+      briefly slow.
+- [ ] **Folders are sync entities, not an accident of paths.** *Against the
+      recommendation, deliberately:* 5d gives the user a real "New section" button,
+      and a git-style file-only protocol would leave a section made on one device
+      invisible on the other until a note landed in it. It also fixes books — a
+      book is a folder plus `booklet.json`, so file-only sync would have no book
+      until it had a note. Costs, all real: folders need manifest entries, feed
+      entries and tombstones of their own; a folder move must ride as **one** entry
+      or it is not a move; and **a folder delete propagates only when the folder is
+      empty on the receiving side**, or a delete takes files with it that the
+      deleting device never saw.
+- [ ] The watcher already exists (`src/library.rs`) and already calls `refresh` on
+      every write. Sync hangs off those events rather than growing a second
+      watcher.
+
+### 2b — Merge and conflict rules
+
+- [ ] **Three-way merge via `diff-match-patch-rs`**, computed in Qt-free core as a
+      pure `(base, local, remote) -> (merged, per-hunk applied)`. Note DMP is *not*
+      a merge library: the merge is `patch_make(base→local)` applied onto remote,
+      matching fuzzily. **That fuzziness is Obsidian's duplicated-sections bug**,
+      not a side effect of it. Chosen anyway over `diffy`'s diff3, which never
+      corrupts silently but writes `<<<<<<<` markers into prose and diffs by line —
+      coarse when a paragraph is one long line.
+- [ ] **The base comes from the server**, not a local shadow copy: 2c keeps
+      history, so the ancestor is a fetch away. Merging only happens during a sync
+      and a sync means a connection, so this costs offline-first nothing. It does
+      mean **the server's storage is history-shaped from the first commit** (2c).
+- [ ] **A partial merge is accepted and the note is flagged**, rather than falling
+      back to a conflict copy. *Against the recommendation.* It is defensible only
+      because history exists — a merge that duplicates a section is recoverable
+      from the version before it. **These two decisions are load-bearing for each
+      other: dropping history makes this one reckless.**
+- [ ] **Conflict copies survive for exactly one case — no common ancestor.** Two
+      devices independently create the same filename, so there is nothing to merge
+      from. `Note (conflict 2026-07-15).md`; a second conflict the same day needs a
+      suffix. Obsidian punts on this same case. Conflict copies are ordinary
+      markdown and so sync everywhere for free, which puts the losing text on
+      whichever machine you happen to be at.
+- [ ] **Whoever syncs first keeps the name**, when it comes to that: the server
+      409s a stale PUT and the loser reconciles. Deterministic, no clock trust —
+      two machines' clocks disagree and mtime-LWW picks the wrong winner silently.
+      This is really *first*-write-wins, a second deviation from CLAUDE.md's
+      wording; with merging primary it now only decides the no-ancestor case.
+- [ ] **`booklet.json` merges by key overlay** — local keys over remote, Obsidian's
+      approach for its settings JSON. It cannot emit invalid JSON (a text merge
+      can), binding colour and shelf label are independent fields so key grain is
+      the right grain, and it preserves 5g's promise that unknown keys survive.
+- [ ] **Deletes land in the system Trash** on the receiving device — the same
+      `trash` crate 5d uses. A sync bug or a mis-click on another machine then
+      costs nothing permanent, which matters most while the sync code is newest.
+- [ ] Unit-test the resolution matrix over `(base, local, remote)` triples. No
+      network, no Qt.
+
+### 2c — `booklet-sync-server`
+
+- [ ] **Multi-user** (decided while planning M7): a vault belongs to a user, a
+      device token to a user's device, every route scoped by owner. Ownership has
+      to be on the routes from the first commit — retrofitting means auditing every
+      one again. Accounts are made by an admin (M7); no self-registration, no
+      invites, no email. This is what gives the app's inert **Sign in** (5h)
+      something to mean: credentials buy a device token.
+- [ ] **Content-addressed blobs + a metadata DB.** *Reversed from the first pass*,
+      which mirrored current files as plain markdown on disk: history makes
+      content-addressing nearly free (a version is a blob, dedup comes built in)
+      and makes the mirror expensive. **The cost, plainly: the server's data
+      directory is no longer readable without the DB.** Backup stops being
+      rsync-and-relax and a corrupt DB is total loss rather than partial. Local
+      disk is still plain markdown — CLAUDE.md's rule is about the client — but the
+      server no longer shares that property, and that was a real reason to like the
+      mirror.
+- [ ] **History kept forever**, with a UI in 2e. *Against the recommendation on
+      both counts.* What bounds it is the push debounce in 2d, not a retention
+      policy: versions track lulls in writing rather than keystrokes. **Revisit
+      first if the blob store grows faster than expected** — the fallback is a
+      horizon plus "your cursor is too old, resync fully".
+- [ ] **Per-vault monotonic sequence + per-file version.** Every mutation bumps the
+      sequence; `GET /changes?since=N` is the feed. Each file carries its own
+      version, sent as the base on PUT so a stale write is caught. Both
+      server-assigned — no clocks in the protocol.
+- [ ] **Tombstones forever.** A path, a version, a timestamp — years of deletions
+      is a few thousand rows. GC needs a horizon *plus* a full-resync fallback,
+      i.e. both mechanisms, and a device offline past the horizon re-uploads
+      everything you deleted.
+- [ ] **axum + tokio** — extractors and middleware for the auth boundary, and it
+      serves M7's admin HTML from the same binary without a second stack. A large
+      tree for ~eight routes; accepted.
+- [ ] **TLS terminates at a reverse proxy**; the server binds `127.0.0.1` and
+      speaks HTTP. Caddy/nginx already solve certificates and renewal, and binding
+      to loopback hands M7 its localhost-only `/admin` for free. Transport stays
+      HTTPS end-to-end, so CLAUDE.md holds. Cost: deploying is two things.
+
+### 2d — Client sync engine
+
+- [ ] **Blocking `ureq` on a dedicated thread.** The engine must be off the UI
+      thread regardless, and a blocking call inside a thread you own is the
+      simplest thing that works. No async runtime in the QML process, and
+      `booklet-core` stays free of Qt *and* tokio — so its tests stay plain
+      `#[test]`.
+- [ ] **`booklet-sync-proto`** — a workspace crate of wire types depended on by
+      both sides, so the contract cannot drift. A shared contract with two real
+      consumers today, so Rule 2 does not bite. Not in `booklet-core`: the server
+      would then pull `pulldown-cmark` and `trash`, and `trash` wants a desktop
+      session a headless box does not have.
+- [ ] **Poll `/changes?since=N`** every ~30s, plus on startup, on window focus and
+      after a push. One route, no persistent connection, no reconnect logic. Up to
+      ~30s of latency, accepted for a personal server.
+- [ ] **Push on a long debounce (10–30s idle)** — deliberately *not* the flush
+      debounce. The disk flush stays fast because that is local safety; the push
+      waits for a real lull, so a version means "a moment you stopped writing"
+      rather than "you paused to think". **This is the only thing bounding the
+      forever-history.**
+- [ ] **Only `.md` and `booklet.json` sync**, per CLAUDE.md; everything else in the
+      vault is ignored. **Open question: whether an ignored file is silent.** A
+      user who drops a PDF in and finds it missing on the other device deserves to
+      be told. Decide when the UI lands.
+- [ ] **Publish and clone; refuse to merge two non-empty vaults.** Publish a local
+      vault into an empty server slot; clone a server vault into an empty local
+      folder. Both unambiguous. A non-empty local vault pointed at a non-empty
+      server vault is refused with an explanation — consistent with 5h, where
+      `create_vault` already refuses a folder holding anything. Known gap: "I set
+      both up before signing in" needs a manual fix.
+- [ ] **The device token gets its own file, chmod 0600** — not `vaults.json`, which
+      is hand-editable by design and the kind of thing pasted into a bug report; a
+      live credential should not ride along. Plaintext at rest accepted (anything
+      running as you can read it). The OS keychain needs a Secret Service daemon a
+      minimal Linux box may not run, so it would mean shipping both paths.
+- [ ] Integration-test client↔server in-process on a random port. No UI.
+
+### 2e — Live merge and version history (the UI step)
+
+Split out because 2a–2d keep CLAUDE.md's no-UI exit and this cannot: merging into
+the document someone is typing in is UI work by definition. **The algorithm stays
+in Qt-free core and is unit-tested there; only its application lives here.**
+
+- [ ] **Merge applies to the live `TextEdit` document**, Obsidian-style — text
+      appears in place, no reload, no flicker. *Against the recommendation*
+      (flush → merge on disk → reload with the caret restored), which would have
+      kept everything in testable core. **This is where the milestone's risk
+      concentrates:** the merge straddles Rust → QML → the C++ highlighter, the
+      caret must be transformed rather than restored, and it mutates a document
+      `set_source` is firing into on every keystroke.
+- [ ] **Re-check local at apply time; recompute if it moved.** Base and remote
+      arrive over the network and the user keeps typing during the fetch, so the
+      local text the merge was computed from is stale on arrival. Compare before
+      applying, redo if it changed. Converges because typing pauses; bound the
+      retry and defer to the next pause rather than spin.
+- [ ] **Flagged notes get a banner** above the text by the meta line, plus a
+      **count on the sync pill**. The banner is unmissable when you open the note;
+      the pill is how you find a flagged note you have *not* opened. Dismissing it
+      is the "I checked it" action. **This flag is the only thing between a
+      silently duplicated section and the user — it is not decoration.**
+- [ ] **Version history is a modal**, like Settings: a version list beside a diff
+      of the selected one, with restore. Per-note, but a diff needs width the 220px
+      Marginalia pane has not got, and M5 reserves full-window for library-wide
+      modes (shelf, picker). It ships here because it is the recovery path for an
+      accepted partial merge — **history the user cannot reach does not make a bad
+      merge recoverable.**
+- [ ] **Sync pill goes live** — synced / syncing / offline / error, plus the
+      flagged count. It has rendered the offline state since 5b; here it earns it.
+- [ ] Notify the UI from the sync thread via `QmlMethodInvoker`, as CLAUDE.md
+      requires and as the file watcher already does.
+
+**Exit:** 2a–2d — two clients reconcile through the server, merging where they
+can and writing conflict copies where there is no ancestor, all verified by tests
+with no UI. 2e — the same driven through the app, with a flagged merge
+recoverable from history.
+
+Still recommended: a short design note before 2c. The account model, the blob
+store and the version feed are the parts that are expensive to change once
+written.
 
 ## M3 — App adapters follow CLAUDE.md idioms
 
@@ -156,6 +350,13 @@ in it — do not "fix" these back:
   dots call `NoteEditor.open_by_title(title)`, which already creates and opens.
 - **The sync pill ships inert.** Its status needs the sync engine (M2); until
   then it renders the offline state and gains real status in M2.
+- **The tree row's hover tint is the theme's ink at 3%, not white.** The
+  reference hardcodes `rgba(255,255,255,.03)` for `.row:hover` — the one hover in
+  the whole document that is not `var(--active-pill)` — and that reads as nothing
+  on `vellum`'s paper. Deriving the tint from `Theme.text` lightens on a dark
+  theme and darkens on a light one, which is what the 3% was for. **This is a bug
+  in the reference, not a disagreement with it:** vellum was added to the
+  reference without revisiting the rule.
 
 ### 5a — One active vault (model change)
 
@@ -398,6 +599,13 @@ to fail against the old code.
       exist — the tree's sidebar for the rail, the picker's cards for the panes.
       Being a modal, it closes itself on Escape or a click outside and needs no
       full-window flag; a × sits top-right, since neither of those is visible.
+      - **Four themes**, as the reference now carries: `night`, `atlas`,
+        `graphite` and `vellum`. The picker is a 2-column `Grid` — four 190px
+        swatches in a row is 790px and the pane is 592. **`vellum` is the first
+        light theme**, which makes a rule out of what used to be free: a tint has
+        to derive from a token (`Theme.text`, `Theme.brass`), because hardcoded
+        white or black inverts on paper. That caught the tree's row hover; see the
+        deviations above.
       - **The theme now persists** (`theme` in the config). A picker whose choice
         is forgotten on restart is not a setting, so this went in with it. The
         engine stores the name without validating it — naming the themes is the
@@ -414,3 +622,126 @@ field, drag-and-drop moves, split view.
 - [ ] Persistent link index if the on-demand scan gets slow (measure first).
 - [ ] Graduate the hot lists to `qtbridge::QListModel` once the trait API
       settles.
+
+## M7 — Sync server admin panel
+
+Numbered last but **gated on 2c/2d, not on M6**: the panel needs a server with
+real accounts and real sync state to look at, and nothing else. Decided with the
+user: **a web UI served by `booklet-sync-server` itself**, over the CLI and over
+a screen in the app, because the box you want to inspect is usually not the box
+you are reading notes on.
+
+A self-hosted server nobody can see into is a server nobody can debug. The panel
+answers four questions and stops: who has an account, which devices hold live
+tokens, what is on disk and how big, and what recently went wrong. Every feature
+below earns its place against one of those; anything that does not is listed as
+out of scope at the foot.
+
+**The panel never reads note content.** It is an operations surface — users,
+devices, bytes, errors. An admin panel that can open somebody's notes is a
+second, weaker way into every vault on the box, and Booklet's own editor is
+already the way in for the person who owns them. This is the line that keeps the
+panel small.
+
+### 7a — Admin identity (server work, before any HTML)
+
+- [ ] **An admin session is not a device token.** A device token is bearer
+      credential shipped to a laptop to sync a vault; it must not open `/admin`,
+      and an admin cookie must not sync files. Different audience, different
+      lifetime, checked separately — one shared "is authenticated" helper across
+      both is exactly the bug to avoid.
+- [ ] **Sessions:** signed `HttpOnly` + `Secure` + `SameSite=Strict` cookie,
+      short expiry, server-side store so revocation is real. Argon2id for
+      password hashes. Rate-limit sign-in — the panel is the one surface a
+      stranger can reach with a guess.
+- [ ] **Bootstrap the first admin from the shell**, not the web:
+      `booklet-sync-server admin grant <handle>`. Nobody can sign in to make the
+      first admin, and a self-registering "first visitor becomes root" page is a
+      race with whoever finds the port first. Shell access to the box is the root
+      of trust.
+- [ ] **One flag, not roles.** `is_admin` on the user. Roles are a table, a
+      policy check on every route and a UI to edit them; there are two kinds of
+      person here (an operator and everybody else) and Rule of Three has not been
+      met.
+
+### 7b — Rendering and assets
+
+- [ ] **Server-rendered HTML, no SPA, no npm, no build step.** Forms that POST
+      and redirect. The panel is a handful of tables and about six buttons; a
+      frontend toolchain would be larger than the thing it builds, and it would
+      be the only JS build in a repo that is Rust, QML and one C++ file.
+- [ ] **Templates and CSS `include_str!`'d into the binary**, so deploying stays
+      "copy one file to the box". Templating crate (`maud` / `askama`) is a
+      dependency choice worth one sentence at implementation time — `format!`
+      over a `String` is a real option at this size and does not need HTML
+      escaping bolted on later, which is the argument against it.
+- [ ] **Reuse `design/reference.html`'s `:root` block verbatim.** Its custom
+      properties are already the design language and already map 1:1 to
+      `Theme.qml`. Lifting the token block gives the panel Booklet's face for
+      free and avoids a second vocabulary drifting from the first.
+- [ ] **Serve the bundled OFL fonts from the binary; no external requests.**
+      `reference.html` pulls Google Fonts over the network — fine for a design
+      doc opened on a dev machine, wrong for an admin page on a self-hosted box
+      that may have no route to the internet and whose operator did not ask to
+      tell Google when they log in. The four families are already in
+      `src/booklet/fonts/`; fall back to `system-ui` rather than block on them.
+
+### 7c — The pages
+
+- [ ] **Overview** — server version and uptime, storage used and free, counts of
+      users / devices / vaults, recent **flagged merges** and recent conflict
+      copies. Flagged merges belong on the front page: 2b accepts a partial merge
+      and marks the note, so this is the operator's view of how often the merge
+      is guessing. Conflict copies are rarer now (no-ancestor only) but are still
+      the loudest thing sync does to a vault.
+- [ ] **Blob store health** — total blobs, bytes, and growth. History is kept
+      forever (2c) bounded only by the client's push debounce, so this number is
+      the one that tells you the bound stopped holding.
+- [ ] **Users** — list (handle, created, last seen, vaults, bytes) and a detail
+      page carrying that user's devices and vaults.
+- [ ] **Devices** — name, platform, issued, last seen, per user.
+- [ ] **Vaults** — owner, note count, bytes, last sync. Names and sizes; not
+      contents.
+- [ ] **Log** — recent sign-ins, token issues and revocations, user and vault
+      deletions, conflicts. Append-only, capped, plain rows.
+
+### 7d — Actions
+
+Every mutation is a POST behind a CSRF token, and every one lands in the log.
+
+- [ ] Create a user; disable a user (keeps the files, kills the tokens); delete a
+      user.
+- [ ] Revoke a device token — the reason the panel exists at all, for a laptop
+      that walked off.
+- [ ] **Deleting a user touches the disk and is the one irreversible thing here.**
+      It gets a typed-confirmation, and it says what it is about to remove and how
+      many bytes, before it does.
+
+### 7e — Hardening
+
+- [ ] **CSRF token on every mutating form.** A cookie-authenticated HTML form
+      surface is the textbook case, and this is the whole reason the panel is
+      riskier than the sync API (which is bearer-token and immune by
+      construction).
+- [ ] **`/admin` binds to `127.0.0.1` by default**, reached over an SSH tunnel;
+      exposing it publicly is an explicit config change with a comment saying
+      what it costs. Sync itself needs the world; administration does not.
+- [ ] Device token rejected on `/admin`, admin cookie rejected on sync routes —
+      as a test, not as a review comment.
+- [ ] Integration-test the auth boundary the way 2d tests the sync one: no UI,
+      just requests that should be refused.
+
+Explicitly **not** in this milestone — each is a real feature someone could want,
+and none is needed to answer the four questions:
+
+- **Quotas and billing.** Self-hosted; the operator owns the disk and can see the
+  bytes on the Overview page.
+- **Reading or editing notes through the panel.** See above — this is the line.
+- **Invites, email, password reset, self-registration.** The admin makes accounts
+  by hand. Email is a whole subsystem (deliverability, secrets, a queue) bought
+  for one form.
+- **Metrics dashboards and graphs.** Counters and numbers first. If the numbers
+  stop being enough, that is a measurement, and it argues for exporting to
+  Prometheus rather than drawing charts in Rust.
+- **A second theme.** The panel takes `night` and stops; the toggle is the app's
+  business.

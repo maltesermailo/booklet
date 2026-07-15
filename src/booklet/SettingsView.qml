@@ -13,7 +13,10 @@ Popup {
 
     modal: true
     focus: true
-    padding: 0
+    // 1px of room for the frame's border. The rail and the panes fill the
+    // content item, and at 0 the rail painted straight over the border and the
+    // rounded corners on its side — the frame stopped where the sidebar began.
+    padding: 1
     // Big enough for the vault list to breathe, never bigger than the window.
     width: Math.min(760, Overlay.overlay ? Overlay.overlay.width - 60 : 760)
     height: Math.min(520, Overlay.overlay ? Overlay.overlay.height - 60 : 520)
@@ -71,7 +74,7 @@ Popup {
         color: Theme.bg
         border.color: Theme.pageLine
         border.width: 1
-        radius: 8
+        radius: Theme.radiusCard
     }
 
     // Escape and a click outside already close this, but neither is visible.
@@ -118,6 +121,11 @@ Popup {
             width: 168
             height: parent.height
             color: Theme.sidebar
+            // Round where the rail meets the frame, square where it meets the
+            // pane, so the border reads as one line around the whole modal. One
+            // less than the frame's radius: that is the room its border leaves.
+            topLeftRadius: Theme.radiusCard - 1
+            bottomLeftRadius: Theme.radiusCard - 1
             // Only the right edge, as a divider against the pane.
             Rectangle {
                 anchors.right: parent.right
@@ -300,15 +308,22 @@ Popup {
                     blurb: "The theme, and how large and how roomy the interface "
                          + "draws. All three are remembered."
 
-                    Row {
+                    // Two columns: four swatches in a row would be 790px and the
+                    // pane is 592 before its padding.
+                    Grid {
+                        columns: 2
                         spacing: 10
 
                         Repeater {
-                            // Two themes, named as Theme.qml names them.
+                            // Four themes, named as Theme.qml names them.
                             model: [{ "id": "night", "label": "Night",
                                       "blurb": "Warm near-black reading room" },
                                     { "id": "atlas", "label": "Celestial Atlas",
-                                      "blurb": "Void blue-black, comet links" }]
+                                      "blurb": "Void blue-black, comet links" },
+                                    { "id": "graphite", "label": "Graphite",
+                                      "blurb": "Near-OLED black, silver accents" },
+                                    { "id": "vellum", "label": "Vellum",
+                                      "blurb": "Light: warm paper, oxblood links" }]
 
                             delegate: Rectangle {
                                 id: swatch

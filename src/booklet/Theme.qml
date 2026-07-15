@@ -2,12 +2,19 @@ pragma Singleton
 import QtQuick
 import booklet
 
-// Two themes sharing one token vocabulary. Components only ever read the
+// Four themes sharing one token vocabulary. Components only ever read the
 // flat aliases at the bottom, so adding a theme means adding one palette
 // object and one branch in `p`.
-//   "night" — warm near-black reading room, brass foil, ember links
-//   "atlas" — Celestial Atlas: void blue-black, starlight ink, gilt
-//             accents, comet-teal links
+//   "night"    — warm near-black reading room, brass foil, ember links
+//   "atlas"    — Celestial Atlas: void blue-black, starlight ink, gilt
+//                accents, comet-teal links
+//   "graphite" — near-OLED black, warm gray ink, silver accents, steel-blue
+//                links (which stay scannable where silver would not)
+//   "vellum"   — the only light theme: warm paper, dark brass, oxblood links
+//
+// Vellum is why a tint must derive from a token (`Theme.text`, `Theme.brass`)
+// instead of hardcoding white or black: a 3% white lift reads as nothing on
+// paper. Three themes hid that for free; this one does not.
 //
 // It also owns how big the chrome draws. Every size in the reference is a
 // number designed against 100%, so components write `Theme.px(13)` rather than
@@ -97,7 +104,48 @@ QtObject {
         readonly property color activePill:  "#16202E"
     }
 
-    readonly property QtObject p: mode === "atlas" ? atlas : night
+    readonly property QtObject graphite: QtObject {
+        readonly property color bg:          "#0E0E0E"  // near-OLED black
+        readonly property color sidebar:     "#121212"
+        readonly property color sidebarLine: "#242424"
+        readonly property color page:        "#171717"
+        readonly property color pageLine:    "#2A2A2A"
+        readonly property color panel:       "#101010"
+        readonly property color codeBg:      "#0A0A0A"
+        readonly property color editBg:      "#1E1E1E"
+        readonly property color text:        "#D8D8D3"  // warm gray ink
+        readonly property color textBright:  "#F2F2EE"
+        readonly property color textSoft:    "#9C9C97"
+        readonly property color textDim:     "#5E5E5A"
+        readonly property color accent:      "#C4C4BC"  // silver
+        readonly property color accentDeep:  "#8F8F88"
+        readonly property color link:        "#82A7C4"  // steel blue
+        readonly property color activePill:  "#242424"
+    }
+
+    readonly property QtObject vellum: QtObject {
+        readonly property color bg:          "#EAE3D3"  // warm paper
+        readonly property color sidebar:     "#E2DAC7"
+        readonly property color sidebarLine: "#CDC2A8"
+        readonly property color page:        "#F7F2E6"  // the sheet, lighter than bg
+        readonly property color pageLine:    "#D8CDB2"
+        readonly property color panel:       "#E7E0CF"
+        readonly property color codeBg:      "#EAE2CD"
+        readonly property color editBg:      "#EFE8D7"
+        readonly property color text:        "#2E2820"  // ink
+        readonly property color textBright:  "#1E1913"
+        readonly property color textSoft:    "#6E6350"
+        readonly property color textDim:     "#9C8F76"
+        readonly property color accent:      "#8A6D28"  // dark brass for light ground
+        readonly property color accentDeep:  "#6F571F"
+        readonly property color link:        "#8C3A2F"  // oxblood
+        readonly property color activePill:  "#DCD2BB"
+    }
+
+    readonly property QtObject p: mode === "atlas" ? atlas
+                                : mode === "graphite" ? graphite
+                                : mode === "vellum" ? vellum
+                                : night
 
     readonly property color bg:          p.bg
     readonly property color sidebar:     p.sidebar

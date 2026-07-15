@@ -77,9 +77,16 @@ Rectangle {
         return editor.text.substring(0, position).split("\n").length - 1
     }
 
-    // The title of the [[wiki-link]] `position` falls inside, or "".
-    function linkAt(position) {
+    // The title of the [[wiki-link]] under (x, y), or "". The point has to land
+    // on the link's glyphs, which is why this takes a point and not a position:
+    // `positionAt` snaps to the *nearest* position, so a click in the empty
+    // margin beside a line resolves to that line's end, and a click below the
+    // text resolves to the note's end. A line ending in a link would otherwise
+    // be followed from anywhere to the right of it.
+    function linkAtPoint(x, y) {
         var text = editor.text
+        var position = editor.positionAt(x, y)
+
         var open = text.lastIndexOf("[[", position)
         if (open < 0)
             return ""
@@ -90,6 +97,22 @@ Rectangle {
 
         var inner = text.substring(open + 2, close)
         if (inner.indexOf("\n") !== -1) // not a link, just stray brackets
+            return ""
+
+        // The link's glyphs run from `open` to `close + 2`: off the caret's line
+        // the markers are collapsed to no width, so those bounds sit exactly on
+        // the rendered title, and on the caret's line they wrap the visible
+        // `[[Title]]` — either way, the span the eye sees.
+        var start = editor.positionToRectangle(open)
+        var end = editor.positionToRectangle(close + 2)
+        if (y < start.y || y > end.y + end.height)
+            return ""
+
+        // A long title can soft-wrap, and then the two ends sit on different
+        // rows and no single x range describes it. The rows above still bound
+        // it; that is loose by a margin's width and beats not following a
+        // wrapped link at all.
+        if (start.y === end.y && (x < start.x || x > end.x))
             return ""
 
         var alias = inner.indexOf("|")
@@ -313,7 +336,7 @@ Rectangle {
                             if (view.lineOf(at) === linkTap.caretLineOnPress)
                                 return
 
-                            var title = view.linkAt(at)
+                            var title = view.linkAtPoint(point.position.x, point.position.y)
                             if (title !== "")
                                 NoteEditor.open_by_title(title)
                         }
@@ -324,8 +347,7 @@ Rectangle {
                     TapHandler {
                         acceptedModifiers: Qt.ControlModifier
                         onTapped: (point) => {
-                            var at = editor.positionAt(point.position.x, point.position.y)
-                            var title = view.linkAt(at)
+                            var title = view.linkAtPoint(point.position.x, point.position.y)
                             if (title !== "")
                                 NoteEditor.open_by_title(title)
                         }

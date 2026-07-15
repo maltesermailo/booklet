@@ -50,6 +50,43 @@
       --active-pill: #16202E;
     }
 
+    html[data-theme="graphite"]{
+      --bg:          #0E0E0E;   /* near-OLED black            */
+      --sidebar:     #121212;
+      --sidebar-line:#242424;
+      --page:        #171717;
+      --page-line:   #2A2A2A;
+      --panel:       #101010;
+      --code-bg:     #0A0A0A;
+      --edit-bg:     #1E1E1E;
+      --text:        #D8D8D3;   /* warm gray ink              */
+      --text-bright: #F2F2EE;
+      --text-soft:   #9C9C97;
+      --text-dim:    #5E5E5A;
+      --accent:      #C4C4BC;   /* silver                     */
+      --accent-deep: #8F8F88;
+      --link:        #82A7C4;   /* steel blue: links stay scannable */
+      --active-pill: #242424;
+    }
+    html[data-theme="vellum"]{
+      --bg:          #EAE3D3;   /* light: warm paper           */
+      --sidebar:     #E2DAC7;
+      --sidebar-line:#CDC2A8;
+      --page:        #F7F2E6;   /* the sheet, lighter than bg  */
+      --page-line:   #D8CDB2;
+      --panel:       #E7E0CF;
+      --code-bg:     #EAE2CD;
+      --edit-bg:     #EFE8D7;
+      --text:        #2E2820;   /* ink                         */
+      --text-bright: #1E1913;
+      --text-soft:   #6E6350;
+      --text-dim:    #9C8F76;
+      --accent:      #8A6D28;   /* dark brass for light ground */
+      --accent-deep: #6F571F;
+      --link:        #8C3A2F;   /* oxblood                     */
+      --active-pill: #DCD2BB;
+    }
+
     :root{
       --f-display:"EB Garamond",Georgia,serif;   /* titles, book names        */
       --f-ui:"Alegreya Sans",system-ui,sans-serif; /* chrome, tree, metadata  */
@@ -237,8 +274,10 @@
   <h1>Booklet — design reference</h1>
   <span class="sub">two themes, one token vocabulary · maps 1:1 to qml/Theme.qml</span>
   <div class="switch">
-    <button id="b-night" class="on" onclick="setTheme('night')">night</button>
-    <button id="b-atlas" onclick="setTheme('atlas')">atlas</button>
+    <button data-t="night" class="on" onclick="setTheme('night')">night</button>
+    <button data-t="atlas" onclick="setTheme('atlas')">atlas</button>
+    <button data-t="graphite" onclick="setTheme('graphite')">graphite</button>
+    <button data-t="vellum" onclick="setTheme('vellum')">vellum</button>
   </div>
 </div>
 
@@ -489,8 +528,8 @@
 <script>
   function setTheme(t){
     document.documentElement.dataset.theme = t;
-    document.getElementById('b-night').classList.toggle('on', t==='night');
-    document.getElementById('b-atlas').classList.toggle('on', t==='atlas');
+    document.querySelectorAll('.switch button').forEach(b =>
+            b.classList.toggle('on', b.dataset.t === t));
     renderTokens();
   }
   function renderTokens(){

@@ -58,21 +58,46 @@ else without asking — every other feature so far has been reachable from Rust.
    portable, which the per-vault sync depends on.
 4. **Server sync (base feature)** — the vault synchronizes against a
    self-hosted server. Requirements:
-   - Plain markdown on disk stays the source of truth locally; sync must
-     never require a proprietary container format.
+   - Plain markdown on disk stays the source of truth **locally**; the client
+     must never require a proprietary container format. This rule is about the
+     client only: the server stores content-addressed blobs, because version
+     history (below) makes a plain-file mirror expensive and blob dedup nearly
+     free. The trade — the server's data directory is unreadable without its
+     metadata DB — was taken knowingly.
    - Sync unit is the individual note file plus book metadata
      (`booklet.json`); moves/renames are tracked, not treated as delete+create
-     when avoidable.
+     when avoidable. **Folders sync as entities of their own**, so a section
+     created on one device appears on another before it holds a note, and a
+     book exists as soon as its `booklet.json` does.
    - Offline-first: full functionality without a connection; sync reconciles
      on reconnect.
-   - Conflict strategy for v1: last-write-wins per file with the losing
-     version preserved as a conflict copy next to the note
-     (`Note (conflict 2026-07-15).md`). CRDT/merge-based syncing is
-     explicitly out of scope until there is a demonstrated need — do not
-     build toward it speculatively.
+   - **Conflict strategy: three-way merge, with conflict copies as the
+     narrow fallback.** Markdown merges via diff-match-patch against a base
+     fetched from the server's version history; a partial merge is accepted and
+     the note is **flagged** for review rather than discarded. `booklet.json`
+     merges by key overlay (local over remote), which cannot emit invalid JSON.
+     A **conflict copy** (`Note (conflict 2026-07-15).md`) is written for the
+     one case a merge cannot serve: no common ancestor, i.e. two devices
+     independently created the same filename.
+     - This **replaces** the earlier rule ("last-write-wins per file … merge-based
+       syncing is explicitly out of scope — do not build toward it
+       speculatively"). Changed deliberately: Obsidian merges markdown and offers
+       conflict files only as an opt-out, and a note that silently loses an edit
+       is worse than one that occasionally merges clumsily. The cost is bought
+       with eyes open — diff-match-patch matches fuzzily, and that fuzziness is
+       the duplicated-sections bug in Obsidian's own tracker.
+     - **Version history is therefore not optional.** It is the merge base *and*
+       the recovery path for a bad merge; the flag is only honest because the
+       previous version is a fetch away. Do not remove history without also
+       restoring conflict copies as the primary strategy — the two decisions hold
+       each other up.
    - Transport: HTTPS to a small self-hosted server; authentication via a
-     per-device token. Server implementation lives in a separate crate in
-     this workspace when work on it starts (`booklet-sync-server`).
+     per-device token. TLS terminates at a reverse proxy — the server binds
+     `127.0.0.1` and speaks HTTP. Server implementation lives in a separate
+     crate in this workspace when work on it starts (`booklet-sync-server`),
+     with the wire types in `booklet-sync-proto` so client and server cannot
+     drift. The server is **multi-user**: a vault belongs to a user, a token to
+     a user's device, and every route is scoped by its owner.
    - Sync engine runs off the UI thread; UI is notified via
      `QmlMethodInvoker` (see qtbridge `host_monitor` example).
 

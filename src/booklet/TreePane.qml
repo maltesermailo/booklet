@@ -218,8 +218,13 @@ Rectangle {
             width: ListView.view ? ListView.view.width : 0
             height: Theme.row(24)
             radius: Theme.radiusSmall
+            // The hover lift is the theme's own ink at 3%, not white: the
+            // reference hardcodes rgba(255,255,255,.03) here, which is invisible
+            // on vellum's paper. Deriving it from the ink darkens on a light
+            // theme and lightens on a dark one, which is what the 3% meant.
             color: modelData.id === pane.currentId && !rowItem.editing ? Theme.activePill
-                 : hover.hovered ? Qt.rgba(1, 1, 1, 0.03) : "transparent"
+                 : hover.hovered ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.03)
+                 : "transparent"
 
             Behavior on color {
                 ColorAnimation { duration: Theme.quick; easing.type: Theme.easing }
