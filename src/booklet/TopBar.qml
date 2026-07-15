@@ -15,6 +15,17 @@ Rectangle {
     property string activeName: ""
     property var crumbs: []
 
+    // A hidden panel takes its own toolbar with it, so the only way back has to
+    // live out here.
+    property bool sidebarHidden: false
+    property bool marginaliaHidden: false
+    signal showSidebar()
+    signal showMarginalia()
+
+    // Same 24×24 grid as the reference's icons; the divider says which side.
+    readonly property string sidebarIcon: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M9 4v16"
+    readonly property string marginaliaIcon: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M15 4v16"
+
     function reload() {
         bar.vaults = JSON.parse(Library.vaults())
         var active = bar.vaults.find(function (vault) { return vault.active })
@@ -51,6 +62,14 @@ Rectangle {
         anchors.leftMargin: 14
         spacing: 12
 
+        IconButton {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: bar.sidebarHidden
+            path: bar.sidebarIcon
+            tip: "Show sidebar (⌘⌥S)"
+            onClicked: bar.showSidebar()
+        }
+
         Text {
             anchors.verticalCenter: parent.verticalCenter
             text: "Booklet"
@@ -68,6 +87,10 @@ Rectangle {
             color: vaultHover.hovered ? Theme.activePill : "transparent"
 
             HoverHandler { id: vaultHover }
+
+            ToolTip.visible: vaultHover.hovered
+            ToolTip.text: "Switch vault, add or remove one"
+            ToolTip.delay: 400
 
             Row {
                 id: vaultLabel
@@ -133,6 +156,14 @@ Rectangle {
         anchors.rightMargin: 14
         spacing: 12
 
+        IconButton {
+            anchors.verticalCenter: parent.verticalCenter
+            visible: bar.marginaliaHidden
+            path: bar.marginaliaIcon
+            tip: "Show marginalia (⌘⌥M)"
+            onClicked: bar.showMarginalia()
+        }
+
         Rectangle {
             anchors.verticalCenter: parent.verticalCenter
             width: kbdHint.implicitWidth + 12
@@ -157,6 +188,12 @@ Rectangle {
         Row {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 5
+
+            HoverHandler { id: syncHover }
+
+            ToolTip.visible: syncHover.hovered
+            ToolTip.text: "Sync status — no sync server is configured yet"
+            ToolTip.delay: 400
 
             Rectangle {
                 anchors.verticalCenter: parent.verticalCenter

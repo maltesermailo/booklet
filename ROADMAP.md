@@ -190,7 +190,12 @@ menu.
       middle-click and `⌘W` close; `+`/`⌘T` open the switcher so the note you
       pick lands in a new tab. UI state only.
 - [x] **Hideable panels** — `⌘\` sidebar, `⌘⇧\` Marginalia; the toolbar's
-      hide-sidebar button too.
+      hide-sidebar button too. A hidden panel's toggle goes with it, so the
+      topbar grows a **show** button while a panel is hidden — otherwise the
+      only way back was `⌘\`, which is `⌘⌥⇧7` on a German layout. The reference
+      never depicts the hidden state, so this is a deliberate addition to it.
+- [x] **Tooltips** on every button the reference gives a `title=`: the five
+      toolbar icons, the tab `×` and `+`, the sync pill, and the vault menu.
 - [x] **Resizable panes** — `SplitView` at the reference's 230/220.
       **Widths are not persisted yet** (QtCore `Settings` needs an
       organizationName that qtbridge does not expose; parking it rather than

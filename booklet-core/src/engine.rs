@@ -585,6 +585,23 @@ mod tests {
     }
 
     #[test]
+    fn a_loose_note_at_the_vault_root_is_visible() {
+        let (config_path, vault) = fixture();
+        let mut engine = Engine::new(config_path.clone());
+        engine.add_vault(vault.clone()).unwrap();
+
+        // A note outside any book still exists on disk, so the tree must show
+        // it — otherwise creating one there looks like it vanished.
+        let loose = engine.create_note(&vault, "Loose Note").unwrap();
+
+        assert_eq!(loose, vault.join("Loose Note.md"));
+        // Books sort before loose notes.
+        assert_eq!(titles(&engine), ["Book", "Loose Note"]);
+
+        cleanup(&config_path);
+    }
+
+    #[test]
     fn create_refuses_to_clobber_or_take_a_bad_name() {
         let (config_path, vault) = fixture();
         let mut engine = Engine::new(config_path.clone());

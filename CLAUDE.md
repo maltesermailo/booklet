@@ -8,8 +8,16 @@ rendered block reveals its markdown source) with a bookish reading surface
 (night paper, parchment ink, brass and ember accents, EB Garamond / Spectral
 typography). Notes are plain markdown files on disk.
 
-Stack: **QtQuick (QML) frontend, pure-Rust backend via Qt Bridges for Rust**
-(`qtbridge`, currently public beta). No C++ code in this repository.
+Stack: **QtQuick (QML) frontend, Rust backend via Qt Bridges for Rust**
+(`qtbridge`, currently public beta).
+
+**C++ is allowed only where qtbridge cannot reach.** The backend stays Rust; the
+one sanctioned exception is a `QSyntaxHighlighter` shim for the editor's live
+preview (`src/cpp/`), because highlighting requires attaching to
+`TextEdit.textDocument` and qtbridge 0.2 exposes no text-document types at all
+(its Qt surface is `qstring`/`qvariant`/`qobject`/`qjson*`/`qlist`/`qmetatype`/
+`qguiapplication`/`qqmlapplicationengine`). Do not reach for C++ for anything
+else without asking — every other feature so far has been reachable from Rust.
 
 ## Base features
 
@@ -21,9 +29,17 @@ Stack: **QtQuick (QML) frontend, pure-Rust backend via Qt Bridges for Rust**
    containing sections (folders, nesting without limit) containing notes
    (`.md`). The shelf and the quick switcher scope to the active vault; links
    and backlinks scope to the note's own vault.
-2. **Block editor** — Obsidian-style live preview. Rendered markdown per
-   block; click swaps that block to raw source; leaving the block commits,
-   re-parses, saves. The title is block 0 and behaves like any block.
+2. **Live preview editor** — the pane *is* the note: one always-editable
+   surface over the whole markdown, as in Obsidian. There is no mode to enter
+   and no block to click. The C++ highlighter (`src/cpp/`) styles it as you
+   type — a heading takes its face immediately — and shows the syntax markers
+   only on the line holding the caret, collapsing them to zero width elsewhere
+   so the text reflows as if they were not written. Wiki-links are followed with
+   ⌘+click, since plain clicks belong to the caret. Typing reaches Rust on every
+   keystroke (`set_source`) but the disk only on a pause (`flush`), and
+   `open`/`close` flush first so switching notes cannot drop edits.
+   *(This replaces the earlier click-a-block-to-reveal-source design, which the
+   design reference still depicts as `.srcblock`.)*
 3. **Wiki-links and backlinks** — `[[Title]]` / `[[Title|alias]]` resolve by
    file stem; the Marginalia panel lists notes referencing the current one.
    Both are **scoped to the note's own vault**: a vault is a self-contained
@@ -69,12 +85,22 @@ Stack: **QtQuick (QML) frontend, pure-Rust backend via Qt Bridges for Rust**
   has no tree-model trait, so Rust owns the hierarchy and exposes only visible
   rows (each with `depth`); expand/collapse is a slot. Do not attempt a
   QAbstractItemModel from Rust.
-- `booklet-core::document` — the block editor model: `Document::open` parses a
-  note into top-level blocks (byte ranges via pulldown-cmark); `commit_block`
-  splices the edited slice back, re-parses, writes to disk; `find_note` resolves
-  `[[wiki-links]]` by file stem across all vaults. Qt-free and unit-tested.
-  `src/note.rs` is a thin qtbridge adapter over it and renders the `booklet://`
-  wiki-link scheme (kept app-side so the core stays scheme-agnostic).
+- `src/cpp/markdown_highlighter.{h,cpp}` — the live preview. A
+  `QSyntaxHighlighter` attached to the editing block's `TextEdit.textDocument`:
+  it dims markdown's syntax markers and styles the text as it will render, so
+  `# Test` reads as a heading while you type it. **The only C++ in the repo**,
+  because the highlighter must reach the text document and qtbridge exposes no
+  path to it. `build.rs` runs `moc` and compiles it using
+  `qtbridge-build-utils`' `QtInstallation` (which knows the macOS framework
+  layout); `main.rs` calls `booklet_register_highlighter()` to register the QML
+  type before loading QML.
+- `booklet-core::document` — the note model: `Document::open` reads a note,
+  `set_source` takes the editor's text in memory, `write` puts it on disk (kept
+  apart so the caller decides when to pay for I/O), `create_note` seeds a new
+  one, `find_note` resolves `[[wiki-links]]` by file stem within a vault. It
+  still parses top-level blocks (byte ranges via pulldown-cmark), which nothing
+  currently consumes since the editor became one surface. Qt-free and
+  unit-tested; `src/note.rs` is a thin qtbridge adapter over it.
 - `booklet-core::links` — on-demand `[[..]]` scan for backlinks, scoped to a
   single vault; `booklet_core::vault::vault_of` maps a note path to its vault.
   Fine at personal scale; a persistent index is a later optimization, not now.

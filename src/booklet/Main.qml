@@ -60,12 +60,15 @@ ApplicationWindow {
             treePane.startCreate("note")
         }
     }
+    // Not ⌘\ : the backslash needs ⌥⇧7 on a German layout, so Qt can never
+    // match it. Letters keep these reachable on every keyboard, and ⌘B stays
+    // free for bold text later.
     Shortcut {
-        sequence: "Ctrl+\\"
+        sequence: "Ctrl+Alt+S"
         onActivated: root.sidebarVisible = !root.sidebarVisible
     }
     Shortcut {
-        sequence: "Ctrl+Shift+\\"
+        sequence: "Ctrl+Alt+M"
         onActivated: root.marginaliaVisible = !root.marginaliaVisible
     }
     Shortcut {
@@ -88,7 +91,16 @@ ApplicationWindow {
         spacing: 0
         visible: !root.shelfOpen
 
-        TopBar { Layout.fillWidth: true }
+        TopBar {
+            Layout.fillWidth: true
+
+            // A hidden panel's own toggle goes with it, so the way back lives
+            // in the topbar.
+            sidebarHidden: !root.sidebarVisible
+            marginaliaHidden: !root.marginaliaVisible
+            onShowSidebar: root.sidebarVisible = true
+            onShowMarginalia: root.marginaliaVisible = true
+        }
 
         SplitView {
             Layout.fillWidth: true

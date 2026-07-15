@@ -183,7 +183,7 @@ Rectangle {
             }
             IconButton {
                 path: pane.hideSidebarIcon
-                tip: "Hide sidebar (⌘\\)"
+                tip: "Hide sidebar (⌘⌥S)"
                 onClicked: pane.hideRequested()
             }
         }

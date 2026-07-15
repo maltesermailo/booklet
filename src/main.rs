@@ -9,6 +9,13 @@ mod note;
 /// every byte into a token literal.
 const FONTS_RCC: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/fonts.rcc"));
 
+extern "C" {
+    /// Registers `MarkdownHighlighter` into the `booklet` QML module. It is C++
+    /// because the highlighter has to attach to `TextEdit.textDocument`, which
+    /// qtbridge exposes no way to reach — see CLAUDE.md and src/cpp/.
+    fn booklet_register_highlighter();
+}
+
 fn main() {
     // Booklet styles every control itself, and the native macOS style refuses
     // `background` customization ("the current style does not support
@@ -39,11 +46,16 @@ fn main() {
     qtbridge::include_bytes_qml!("booklet/IconButton.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/Icon.qml", "qt/qml");
 
-    QApp::new()
-        .register::<library::Library>()
+    let mut app = QApp::new();
+    app.register::<library::Library>()
         .register::<note::NoteEditor>()
-        .register::<links::Backlinks>()
-        .add_import_path("qrc:/qt/qml")
+        .register::<links::Backlinks>();
+
+    // SAFETY: a plain qmlRegisterType call, made after the application exists
+    // and before any QML is loaded.
+    unsafe { booklet_register_highlighter() };
+
+    app.add_import_path("qrc:/qt/qml")
         .load_qml_from_file("qrc:/qt/qml/booklet/Main.qml")
         .run();
 }

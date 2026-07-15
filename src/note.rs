@@ -1,34 +1,24 @@
-//! qtbridge adapter for the block editor.
+//! qtbridge adapter for the note editor.
 //!
-//! The document model (block parsing, commit, wiki-link resolution) lives in
-//! `booklet_core::document`; this type drives it, serializes blocks for QML, and
-//! renders the `[[wiki-link]]` scheme — which stays app-side so the core stays
-//! scheme-agnostic. The note title is block 0 (`# Title`), so clicking it
-//! reveals its markdown like any other block.
+//! The document model (reading, saving, wiki-link resolution) lives in
+//! `booklet_core::document`; this type drives it. The editor is a single
+//! surface over the whole note — the markdown is what you edit, and the C++
+//! highlighter (src/cpp/) styles it live — so nothing here renders markdown or
+//! deals in blocks.
 
 use booklet_core::document::{self, Document};
 use booklet_core::{config, vault};
 use qtbridge::qobject;
-use serde::Serialize;
 use std::path::{Path, PathBuf};
-
-/// URL scheme used to smuggle wiki-links through Qt's markdown renderer so QML
-/// can intercept them in onLinkActivated.
-const LINK_SCHEME: &str = "booklet://";
-
-/// A block as handed to QML: the core block plus its rendered `display`.
-#[derive(Serialize)]
-struct BlockView {
-    index: usize,
-    kind: String,
-    source: String,  // raw markdown slice — shown when the block is clicked
-    display: String, // markdown with [[x]] -> [x](booklet://x) for rendering
-}
 
 #[derive(Default)]
 pub struct NoteEditor {
     vaults: Vec<PathBuf>, // all configured vaults, for wiki-link resolution
     document: Option<Document>,
+    /// The editor's text has outrun the disk. Held here rather than in QML so
+    /// that opening another note can flush it first — otherwise switching notes
+    /// mid-edit would drop the last keystrokes.
+    unsaved: bool,
 }
 
 #[qobject(Singleton)]
@@ -48,12 +38,15 @@ impl NoteEditor {
 
     #[qslot]
     fn open(&mut self, id: String) {
+        // Never leave the note you are leaving half-written.
+        self.flush();
+
         match Document::open(PathBuf::from(&id)) {
             Ok(document) => {
                 let title = document.title();
                 self.document = Some(document);
+                // The editor loads the source off this signal.
                 self.note_opened(id, title);
-                self.blocks_changed();
             }
             Err(error) => {
                 // TODO (M3): surface this in the UI instead of the console.
@@ -87,6 +80,15 @@ impl NoteEditor {
         }
     }
 
+    /// Closes the open note, leaving the editor empty. Reports an empty id so
+    /// the tree, breadcrumb, marginalia and window title clear with it.
+    #[qslot]
+    fn close(&mut self) {
+        self.flush();
+        self.document = None;
+        self.note_opened(String::new(), String::new());
+    }
+
     #[qslot]
     fn current_id(&self) -> String {
         self.document
@@ -112,43 +114,52 @@ impl NoteEditor {
         serde_json::to_string(&segments).expect("breadcrumb serializes to JSON")
     }
 
+    /// The open note's markdown. The editor is one surface over the whole note,
+    /// so this is what it shows.
     #[qslot]
-    fn blocks(&self) -> String {
-        let Some(document) = &self.document else {
-            return "[]".into();
-        };
-
-        let blocks: Vec<BlockView> = document
-            .blocks()
-            .into_iter()
-            .map(|block| BlockView {
-                display: rewrite_wikilinks(&block.source),
-                index: block.index,
-                kind: block.kind,
-                source: block.source,
-            })
-            .collect();
-        // Blocks hold only strings and numbers, so serialization cannot fail.
-        serde_json::to_string(&blocks).expect("blocks serialize to JSON")
+    fn source(&self) -> String {
+        self.document.as_ref().map(|document| document.source().to_string()).unwrap_or_default()
     }
 
-    /// Called by QML when the user leaves an edited block.
+    /// Takes the editor's text, without writing. Cheap enough to call on every
+    /// keystroke; `flush` decides when it reaches the disk.
     #[qslot]
-    fn commit_block(&mut self, index: usize, new_source: String) {
+    fn set_source(&mut self, text: String) {
         let Some(document) = &mut self.document else {
             return;
         };
 
-        if let Err(error) = document.commit_block(index, &new_source) {
-            // TODO (M3): surface this in the UI instead of the console.
-            eprintln!("booklet: could not save note: {error}");
-        }
-
-        self.blocks_changed();
+        document.set_source(&text);
+        self.unsaved = true;
     }
 
+    /// Writes the note if it has unsaved text. Called by the editor on a
+    /// debounce and on focus loss, and by `open`/`close` before they move on.
+    #[qslot]
+    fn flush(&mut self) {
+        if !self.unsaved {
+            return;
+        }
+
+        let Some(document) = &self.document else {
+            self.unsaved = false;
+            return;
+        };
+
+        if let Err(error) = document.write() {
+            // TODO (M3): surface this in the UI instead of the console.
+            eprintln!("booklet: could not save note: {error}");
+            return;
+        }
+
+        self.unsaved = false;
+        self.saved();
+    }
+
+    /// The note was written. Deliberately does not carry the text: the editor
+    /// already has it, and re-reading it would move the caret mid-typing.
     #[qsignal]
-    fn blocks_changed(&mut self);
+    fn saved(&mut self);
 
     #[qsignal]
     fn note_opened(&mut self, id: String, title: String);
@@ -167,20 +178,4 @@ impl NoteEditor {
     fn current_folder(&self) -> Option<&Path> {
         self.document.as_ref()?.path().parent()
     }
-}
-
-/// [[Title]] -> [Title](booklet://Title) so MarkdownText renders a link that
-/// QML can intercept via onLinkActivated.
-fn rewrite_wikilinks(source: &str) -> String {
-    let pattern = regex::Regex::new(r"\[\[([^\]\|]+)(\|[^\]]+)?\]\]").unwrap();
-    pattern
-        .replace_all(source, |caps: &regex::Captures| {
-            let target = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
-            let label = caps
-                .get(2)
-                .map(|m| m.as_str().trim_start_matches('|'))
-                .unwrap_or(target);
-            format!("[{label}]({LINK_SCHEME}{target})")
-        })
-        .into_owned()
 }

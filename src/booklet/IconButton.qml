@@ -24,7 +24,7 @@ Rectangle {
 
     ToolTip.visible: hover.hovered && button.tip !== ""
     ToolTip.text: button.tip
-    ToolTip.delay: 600
+    ToolTip.delay: 400
 
     Icon {
         anchors.centerIn: parent

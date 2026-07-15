@@ -18,6 +18,10 @@ Rectangle {
     signal newTabRequested()
 
     function noteOpened(id, title) {
+        // An empty id means the editor was closed, not that a note opened.
+        if (id === "")
+            return
+
         for (var i = 0; i < strip.tabs.length; i++) {
             if (strip.tabs[i].id === id) {
                 strip.current = i
@@ -43,9 +47,9 @@ Rectangle {
         strip.tabs = next
 
         if (next.length === 0) {
-            // The page keeps showing the last note; there is no "close note" in
-            // the editor yet.
+            // Nothing left to show, so clear the page too.
             strip.current = -1
+            NoteEditor.close()
             return
         }
         if (index < strip.current) {
@@ -132,6 +136,10 @@ Rectangle {
 
                     HoverHandler { id: closeHover }
 
+                    ToolTip.visible: closeHover.hovered
+                    ToolTip.text: "Close tab (⌘W)"
+                    ToolTip.delay: 400
+
                     Text {
                         anchors.centerIn: parent
                         text: "×"
@@ -171,6 +179,10 @@ Rectangle {
             color: addHover.hovered ? Theme.activePill : "transparent"
 
             HoverHandler { id: addHover }
+
+            ToolTip.visible: addHover.hovered
+            ToolTip.text: "New tab (⌘T)"
+            ToolTip.delay: 400
 
             Text {
                 anchors.centerIn: parent

@@ -167,15 +167,30 @@ impl Folder for Vault {
         &mut self.books
     }
 
+    /// A vault's folders are its books. Loose markdown at the vault root is
+    /// listed too — it is outside any book, but it is on disk, and the tree must
+    /// never hide a file that exists.
     fn load_children(&self, expanded: &HashSet<PathBuf>) -> Vec<Node> {
-        child_dirs(&self.path)
-            .into_iter()
-            .map(|path| {
+        let mut nodes = Vec::new();
+
+        for entry in sorted_entries(&self.path) {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+
+            if name.starts_with('.') || name == BOOK_METADATA_FILE {
+                continue;
+            }
+
+            if path.is_dir() {
                 let mut book = Book::new(path);
                 book.hydrate(expanded);
-                Node::Folder(Box::new(book))
-            })
-            .collect()
+                nodes.push(Node::Folder(Box::new(book)));
+            } else if is_markdown(&path) {
+                nodes.push(Node::Note(Note::new(path)));
+            }
+        }
+
+        nodes
     }
 }
 

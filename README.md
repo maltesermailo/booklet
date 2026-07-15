@@ -84,12 +84,15 @@ portable.
   with disk. qtbridge 0.2 has no tree-model trait, so Rust hands QML only the
   visible rows (each with a `depth`). `src/library.rs` is a thin qtbridge adapter
   that drives the engine.
-- `booklet-core::document` — the **block editor** model: `Document` parses a
-  note into top-level blocks with byte ranges, `commit_block` splices/reparses/
-  saves, `find_note` resolves wiki-links across vaults. `src/note.rs` is a thin
-  qtbridge adapter: QML renders each block as markdown (Qt renders markdown
-  natively), clicking a block swaps in a TextArea with its raw source, leaving
-  it commits. The adapter renders the `booklet://` wiki-link scheme.
+- `booklet-core::document` — the note model: read, `set_source` (memory),
+  `write` (disk), `find_note` for wiki-links within a vault. `src/note.rs` is a
+  thin qtbridge adapter.
+- **The editor is one always-editable surface** over the whole note — no mode,
+  no block to click. `src/cpp/markdown_highlighter.{h,cpp}` styles the markdown
+  live and shows syntax markers only on the caret's line, collapsing them to
+  zero width elsewhere. It is the only C++ in the repo: highlighting must attach
+  to `TextEdit.textDocument`, which qtbridge cannot reach. Follow a wiki-link
+  with ⌘+click.
 - `booklet-core::links` — on-demand `[[..]]` scan feeding the Marginalia panel,
   scoped to the note's own vault (`vault::vault_of` maps a note to its vault).
   `src/links.rs` is a thin qtbridge adapter.
@@ -137,7 +140,10 @@ All four are SIL Open Font License 1.1 — see [COPYRIGHT.md](COPYRIGHT.md).
 - `⌘L` — the shelf: a full-window library of book spines, grouped by shelf
   label, sized by note count. Pick one to jump to it in the tree (`Esc` leaves).
 - `⌘T` / `⌘W` — open a note in a new tab / close the current tab.
-- `⌘\` / `⌘⇧\` — hide or show the sidebar / the Marginalia panel.
+- `⌘N` — new note, named inline in the tree.
+- `⌘⌥S` / `⌘⌥M` — hide or show the sidebar / the Marginalia panel. (Not `⌘\`:
+  the backslash needs `⌥⇧7` on a German layout, so Qt can never match it. The
+  topbar also grows a button while a panel is hidden.)
 
 The `night` / `atlas` theme toggle has no shortcut; it moves to the Settings
 screen, which is not built yet — so `atlas` is currently unreachable.

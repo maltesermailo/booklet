@@ -48,6 +48,30 @@ impl Document {
             .unwrap_or_default()
     }
 
+    /// The note's markdown, as it stands.
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Takes the editor's text without touching the disk. Kept apart from
+    /// [`Document::write`] so the caller can decide when to pay for I/O.
+    pub fn set_source(&mut self, source: &str) {
+        self.source = source.to_string();
+        self.ranges = parse_ranges(&self.source);
+    }
+
+    /// Writes the note as it stands.
+    pub fn write(&self) -> io::Result<()> {
+        std::fs::write(&self.path, &self.source)
+    }
+
+    /// Replaces the note's markdown and writes it to disk.
+    pub fn save(&mut self, source: &str) -> io::Result<()> {
+        self.set_source(source);
+
+        self.write()
+    }
+
     /// The current blocks, each with its raw source and classified kind.
     pub fn blocks(&self) -> Vec<Block> {
         self.ranges
@@ -214,6 +238,24 @@ mod tests {
         assert_eq!(blocks[1].source, "A paragraph.");
         assert_eq!(blocks[2].source, "- item 1\n- item 2");
         assert_eq!(document.title(), "Note");
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn save_replaces_the_note_and_writes_it() {
+        let dir = temp_dir();
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Note.md");
+        std::fs::write(&path, NOTE).unwrap();
+
+        let mut document = Document::open(path.clone()).unwrap();
+        document.save("# Retitled\n\nRewritten whole.\n").unwrap();
+
+        assert_eq!(document.source(), "# Retitled\n\nRewritten whole.\n");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "# Retitled\n\nRewritten whole.\n");
+        // The blocks follow the new source.
+        assert_eq!(document.blocks()[0].source, "# Retitled");
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

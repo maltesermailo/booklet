@@ -39,7 +39,7 @@ Rectangle {
             panel.noteTitle = title
             panel.backlinks = JSON.parse(Backlinks.for_note(id, title))
         }
-        function onBlocks_changed() {
+        function onSaved() {
             if (panel.noteId !== "")
                 panel.backlinks = JSON.parse(Backlinks.for_note(panel.noteId, panel.noteTitle))
         }

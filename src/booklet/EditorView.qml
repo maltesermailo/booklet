@@ -2,150 +2,170 @@ import QtQuick
 import QtQuick.Controls
 import booklet
 
-// The block editor. Each block renders its markdown natively
-// (TextEdit.MarkdownText). Clicking a block — including the title, which is
-// simply block 0 — swaps it to a raw TextArea with exactly that block's
-// source. Leaving the block (focus loss or Escape) commits it to Rust,
-// which re-parses and saves.
+// The note editor: one surface over the whole note, always editable — no mode
+// to enter, no block to click. What you edit is the markdown itself; the C++
+// highlighter (src/cpp/) styles it live, showing the syntax markers only on the
+// line holding the caret and collapsing them to nothing everywhere else.
+//
+// The sheet grows with the note and the whole thing scrolls, so a note can run
+// as long as it likes.
 Rectangle {
     id: view
     color: Theme.bg
 
-    property var blocks: []
-    property int editing: -1
+    property bool hasNote: false
+    // Loading a note assigns `text`, which fires onTextChanged; without this
+    // the editor would schedule a save of what it just read back.
+    property bool loading: false
 
-    // Must match LINK_SCHEME in src/note.rs.
-    readonly property string linkScheme: "booklet://"
+    // Plain clicks belong to the editor, so links are followed with ⌘+click —
+    // Qt maps ⌘ to ControlModifier on macOS.
+    function linkAt(position) {
+        var text = editor.text
+        var open = text.lastIndexOf("[[", position)
+        if (open < 0)
+            return ""
+
+        var close = text.indexOf("]]", open)
+        if (close < 0 || close + 2 < position)
+            return ""
+
+        var inner = text.substring(open + 2, close)
+        if (inner.indexOf("\n") !== -1) // not a link, just stray brackets
+            return ""
+
+        var alias = inner.indexOf("|")
+        return alias >= 0 ? inner.substring(0, alias) : inner
+    }
 
     Connections {
         target: NoteEditor
-        function onBlocks_changed() {
-            view.blocks = JSON.parse(NoteEditor.blocks())
-            view.editing = -1
+        function onNote_opened(id, title) {
+            view.hasNote = id !== ""
+            saveTimer.stop()
+
+            // Set, never bind: re-reading the source while typing would move
+            // the caret. `open` has already flushed the note we came from.
+            view.loading = true
+            editor.text = NoteEditor.source()
+            view.loading = false
         }
     }
 
-    // The sheet: a centred column, never wider than the reference's 560px, on
-    // 16px/14px of surrounding space.
-    Rectangle {
-        id: page
-        anchors.top: parent.top
-        anchors.bottom: parent.bottom
-        anchors.topMargin: 16
-        anchors.bottomMargin: 16
-        anchors.horizontalCenter: parent.horizontalCenter
-        width: Math.min(parent.width - 28, 560)
-        color: Theme.page
-        border.color: Theme.pageLine
-        border.width: 1
-        radius: 4
+    // The text reaches Rust on every keystroke, but only reaches the disk on a
+    // pause: every write wakes the file watcher, which re-reads the vault.
+    Timer {
+        id: saveTimer
+        interval: 400
+        onTriggered: NoteEditor.flush()
+    }
 
-        // Stitched inner margin — the one bookish flourish on the page. 1px,
-        // 16px in from the left edge, 5px dashes with 6px gaps.
-        Column {
-            x: 16
-            y: 10
-            spacing: 6
-            clip: true
-            Repeater {
-                // Clamp at 0: the height is briefly negative during initial layout.
-                model: Math.max(0, Math.floor((page.height - 20) / 11))
-                Rectangle { width: 1; height: 5; color: Theme.pageLine }
-            }
-        }
+    ScrollView {
+        id: scroll
+        anchors.fill: parent
+        clip: true
+        contentWidth: availableWidth // never scroll sideways
+        ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
-        ListView {
-            id: blockList
-            anchors.fill: parent
-            anchors.topMargin: 22
-            anchors.rightMargin: 26
-            anchors.bottomMargin: 28
-            anchors.leftMargin: 34
-            model: view.blocks
-            spacing: 8
-            clip: true
-            boundsBehavior: Flickable.StopAtBounds
+        Item {
+            width: scroll.availableWidth
+            height: page.height + 32
 
-            delegate: Item {
-                id: blockItem
-                required property var modelData
-                required property int index
-                width: blockList.width
-                implicitHeight: view.editing === index
-                    ? srcEdit.implicitHeight
-                    : rendered.implicitHeight
-                height: implicitHeight
+            // The sheet fills the editor's width. The reference caps it at
+            // 560px and centres it; using the whole field is a deliberate
+            // override.
+            Rectangle {
+                id: page
+                x: 14
+                y: 16
+                width: Math.max(280, parent.width - 28)
+                // At least a screen of paper, taller once the note outgrows it:
+                // 22 above the text, 28 below.
+                height: Math.max(editor.implicitHeight + 50, view.height - 32)
+                color: Theme.page
+                border.color: Theme.pageLine
+                border.width: 1
+                radius: 4
 
-                // --- rendered mode ---
-                TextEdit {
-                    id: rendered
-                    visible: view.editing !== blockItem.index
-                    width: parent.width
-                    readOnly: true
-                    textFormat: TextEdit.MarkdownText
-                    text: blockItem.modelData.display
+                // Stitched inner margin — the one bookish flourish on the page.
+                // 1px, 16px in from the left edge, 5px dashes with 6px gaps.
+                Column {
+                    x: 16
+                    y: 10
+                    spacing: 6
+                    clip: true
+                    Repeater {
+                        // Clamp at 0: briefly negative during initial layout.
+                        model: Math.max(0, Math.floor((page.height - 20) / 11))
+                        Rectangle { width: 1; height: 5; color: Theme.pageLine }
+                    }
+                }
+
+                TextArea {
+                    id: editor
+                    x: 34
+                    y: 22
+                    width: page.width - 60 // 34 left, 26 right
+                    // Fill the sheet even when the note is short, so clicking
+                    // the blank paper below the text lands in the editor and
+                    // puts the caret on the last line, as Obsidian does.
+                    height: Math.max(implicitHeight, page.height - 50)
+                    visible: view.hasNote
+                    padding: 0
+                    wrapMode: TextArea.Wrap
+                    selectByMouse: true
                     color: Theme.text
                     selectionColor: Theme.brassDeep
-                    // EB Garamond carries titles and headings, Spectral the
-                    // prose, JetBrains Mono the code.
-                    font.family: blockItem.modelData.kind === "heading" ? Theme.display
-                               : blockItem.modelData.kind === "code" ? Theme.mono
-                               : Theme.body
-                    font.pixelSize: blockItem.modelData.kind === "heading" ? 24 : 15
-                    wrapMode: Text.Wrap
+                    font.family: Theme.body
+                    font.pixelSize: 15
+                    background: null // the page is the background
 
-                    onLinkActivated: (link) => {
-                        if (link.startsWith(view.linkScheme))
-                            NoteEditor.open_by_title(decodeURIComponent(link.slice(view.linkScheme.length)))
-                        else
-                            Qt.openUrlExternally(link)
+                    onTextChanged: {
+                        if (view.loading)
+                            return
+                        NoteEditor.set_source(editor.text)
+                        saveTimer.restart()
+                    }
+                    onActiveFocusChanged: {
+                        // Don't sit on unsaved text when focus leaves.
+                        if (!activeFocus) {
+                            saveTimer.stop()
+                            NoteEditor.flush()
+                        }
                     }
 
-                    MouseArea { // the Obsidian move: click -> source
-                        anchors.fill: parent
-                        cursorShape: rendered.hoveredLink !== ""
-                            ? Qt.PointingHandCursor : Qt.IBeamCursor
-                        onClicked: (mouse) => {
-                            // Let links win; edit on plain clicks.
-                            if (rendered.hoveredLink !== "") {
-                                rendered.linkActivated(rendered.hoveredLink)
-                                return
-                            }
-                            view.editing = blockItem.index
-                            srcEdit.forceActiveFocus()
+                    MarkdownHighlighter {
+                        document: editor.textDocument
+                        cursorPosition: editor.cursorPosition
+                        markerColor: Theme.textDim
+                        textColor: Theme.textBright
+                        linkColor: Theme.ember
+                        headingFamily: Theme.display
+                        headingPixelSize: 24
+                    }
+
+                    TapHandler {
+                        // Only fires with ⌘ held, so ordinary clicks still place
+                        // the caret.
+                        acceptedModifiers: Qt.ControlModifier
+                        onTapped: (point) => {
+                            var at = editor.positionAt(point.position.x, point.position.y)
+                            var title = view.linkAt(at)
+                            if (title !== "")
+                                NoteEditor.open_by_title(title)
                         }
                     }
                 }
-
-                // --- source mode ---
-                TextArea {
-                    id: srcEdit
-                    visible: view.editing === blockItem.index
-                    width: parent.width
-                    text: blockItem.modelData.source
-                    color: Theme.textBright
-                    font.family: Theme.mono
-                    font.pixelSize: 13
-                    wrapMode: Text.Wrap
-                    background: Rectangle { color: Theme.editBg; radius: 4 }
-
-                    onActiveFocusChanged: {
-                        if (!activeFocus && view.editing === blockItem.index)
-                            NoteEditor.commit_block(blockItem.index, text)
-                    }
-                    Keys.onEscapePressed:
-                        NoteEditor.commit_block(blockItem.index, text)
-                }
             }
         }
+    }
 
-        Text {
-            visible: view.blocks.length === 0
-            anchors.centerIn: parent
-            text: "Choose a note from the index"
-            color: Theme.textDim
-            font.family: Theme.display
-            font.pixelSize: 18
-        }
+    Text {
+        visible: !view.hasNote
+        anchors.centerIn: parent
+        text: "Choose a note from the index"
+        color: Theme.textDim
+        font.family: Theme.display
+        font.pixelSize: 18
     }
 }
