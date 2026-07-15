@@ -134,9 +134,15 @@ Rectangle {
         anchors.fill: parent
         clip: true
         contentWidth: availableWidth // never scroll sideways
+        // ScrollView measures its content by the child's *implicit* size, and
+        // the sheet below has an explicit height instead — leaving this unset
+        // left it at -1, so a note of any length reported as fitting and would
+        // not scroll.
+        contentHeight: sheet.height
         ScrollBar.vertical.policy: ScrollBar.AsNeeded
 
         Item {
+            id: sheet
             width: scroll.availableWidth
             height: page.height + 32
 

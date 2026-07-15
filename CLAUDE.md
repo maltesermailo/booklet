@@ -147,6 +147,11 @@ else without asking — every other feature so far has been reachable from Rust.
 - **Menus are `AppMenu` + `AppMenuItem`**, never stock `Menu`/`MenuItem`: the
   Basic style's menu is a square grey box that belongs to no theme, and the app
   runs under Basic.
+- **`ScrollView` measures its content by the child's *implicit* size.** The
+  editor's sheet has an explicit `height`, so `contentHeight` must be set by hand
+  (`EditorView.qml`); left unset it sits at -1 and a note of any length reports
+  as fitting — the scrollbar never appears and the wheel does nothing. Same trap
+  as `contentWidth`, which was already pinned.
 - **Full-window modes vs modals.** The shelf (⌘L) and the vault picker are
   full-window: the reading layout hides while one is up, and only one may be up.
   Settings (⌘,) and the quick switcher (⌘K) are modals over it. A modal closes
