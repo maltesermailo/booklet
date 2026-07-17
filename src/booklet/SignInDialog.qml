@@ -78,51 +78,69 @@ Popup {
         }
     }
 
-    contentItem: Column {
-        spacing: 14
-        padding: 22
+    // An Item (not a padded Column) so the anchored inner column is sized to the
+    // dialog's width minus its margins — fields that fill `parent.width` then fit
+    // instead of overrunning the frame.
+    contentItem: Item {
+        implicitHeight: form.implicitHeight + 44
 
-        Text {
-            text: "Connect to a sync server"
-            color: Theme.textBright
-            font.family: Theme.display
-            font.pixelSize: Theme.px(19)
-        }
-
-        Field { id: serverField; title: "Server URL"; placeholder: "https://notes.example" }
-        Field { id: handleField; title: "Account" }
-        Field { id: passwordField; title: "Password"; echo: TextInput.Password }
-        Field { id: deviceField; title: "Device name"; text: "This device" }
-
-        Text {
-            visible: dialog.error !== ""
-            text: dialog.error
-            color: Theme.ember
-            width: parent.width - 44
-            wrapMode: Text.WordWrap
-            font.family: Theme.ui
-            font.pixelSize: Theme.px(11)
-        }
-
-        Row {
+        Column {
+            id: form
+            anchors.left: parent.left
             anchors.right: parent.right
-            spacing: 8
+            anchors.top: parent.top
+            anchors.margins: 22
+            spacing: 14
 
-            TextButton {
-                label: "Cancel"
-                onClicked: dialog.close()
+            Text {
+                width: parent.width
+                text: "Connect to a sync server"
+                color: Theme.textBright
+                font.family: Theme.display
+                font.pixelSize: Theme.px(19)
             }
-            TextButton {
-                label: "Sign in"
-                filled: true
-                onClicked: {
-                    dialog.error = ""
-                    Sync.sign_in(JSON.stringify({
-                        server: serverField.text.trim(),
-                        handle: handleField.text.trim(),
-                        password: passwordField.text,
-                        device: deviceField.text.trim()
-                    }))
+
+            Field { id: serverField; title: "Server URL"; placeholder: "https://notes.example" }
+            Field { id: handleField; title: "Account" }
+            Field { id: passwordField; title: "Password"; echo: TextInput.Password }
+            Field { id: deviceField; title: "Device name"; text: "This device" }
+
+            Text {
+                visible: dialog.error !== ""
+                text: dialog.error
+                color: Theme.ember
+                width: parent.width
+                wrapMode: Text.WordWrap
+                font.family: Theme.ui
+                font.pixelSize: Theme.px(11)
+            }
+
+            Item {
+                width: parent.width
+                height: buttons.height
+
+                Row {
+                    id: buttons
+                    anchors.right: parent.right
+                    spacing: 8
+
+                    TextButton {
+                        label: "Cancel"
+                        onClicked: dialog.close()
+                    }
+                    TextButton {
+                        label: "Sign in"
+                        filled: true
+                        onClicked: {
+                            dialog.error = ""
+                            Sync.sign_in(JSON.stringify({
+                                server: serverField.text.trim(),
+                                handle: handleField.text.trim(),
+                                password: passwordField.text,
+                                device: deviceField.text.trim()
+                            }))
+                        }
+                    }
                 }
             }
         }
