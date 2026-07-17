@@ -68,13 +68,27 @@ where the storage saving comes from.
 - **Interface & dedup.** `put(hash, bytes)` is a no-op when `hash` already
   exists — identical content (a revert, or the same note in two books) is stored
   once. The digest is the SHA-256 from 2a; hashed once, end to end.
-- **The base is the path's own lineage.** History is linear per (vault, path):
-  version N's delta base is version N-1's blob. No similarity search — Git's hard
-  part — is needed, because the lineage names the base. So delta encoding happens
-  at the **entity mutation**, not the blob upload: the client uploads the blob
-  whole (`PUT /blobs/:hash`), and when the entity PUT lands — the moment the
-  server knows the path, and thus the base — the new blob is re-encoded as a
-  delta against the previous version's blob.
+- **Two-step upload; the base is the path's own lineage.** The client always
+  sends whole content and never computes deltas. First it `PUT /blobs/:hash`s the
+  full bytes, which the server stores **loose — one full, zstd-compressed file** —
+  knowing nothing yet about which path or version this is. Then it
+  `PUT /vaults/:id/entities/*path`s the "commit" naming that hash as version N of
+  a path. **That** is where the server learns the lineage, so that is where it
+  deltafies: version N's base is version N-1's blob (history is linear per path,
+  so no similarity search — Git's hard part — is needed), and the just-uploaded
+  full blob is re-encoded as a delta against it. The hash never changes; only the
+  on-disk representation goes full → delta.
+- **References cannot dangle; orphans are pruned.** `entities.blob` and
+  `entity_versions.blob` are a **foreign key** to `blobs.hash`, so an entity PUT
+  naming a hash the server does not have is rejected — that is why blobs upload
+  first. The reverse (a blob no entity ever references — a client that crashed
+  between the two steps, or one just spraying `PUT /blobs`) is an **orphan**, and
+  a sweep deletes any blob unreferenced by an `entity_versions` row and older than
+  a short grace window (long enough to cover an in-flight sync batch), exactly as
+  `git gc` prunes unreachable objects. Every route is authenticated and a per-blob
+  size cap bounds a single upload, so orphans are transient junk, not an attack
+  surface. This prune is **not** the deferred history horizon (which prunes
+  *referenced* old versions); it is basic hygiene and ships with 2c.
 - **Bounded chains.** Each blob row carries `depth` (deltas back to a full). If
   encoding version N as a delta would push depth past K, it is stored as a full
   checkpoint (`depth = 0`) instead. Reconstruction walks `base_hash` back to a
@@ -86,10 +100,12 @@ where the storage saving comes from.
   After reconstructing, the server **re-hashes and checks the result equals the
   requested hash**, so a broken chain is caught, never served. Upload likewise
   rejects a blob whose bytes do not hash to its name.
-- **Forever-history keeps chains stable.** No blob is ever deleted while history
-  is kept (2c), so a delta's base never vanishes and chains never need repair. A
-  later retention horizon (deferred, roadmap 2c) must re-materialize any delta
-  whose base it removes — noted so the coupling is not a surprise.
+- **Forever-history keeps chains stable.** No *referenced* blob is ever deleted
+  while history is kept (2c) — the orphan prune above only touches blobs nothing
+  points at — so a delta's base never vanishes and chains never need repair. A
+  later retention horizon (deferred, roadmap 2c), which *would* remove referenced
+  old versions, must re-materialize any delta whose base it removes — noted so the
+  coupling is not a surprise.
 - Files are written atomically (temp + rename), the discipline from 2a's manifest.
 
 This is the store's most intricate part, and also its most isolated — everything
@@ -329,7 +345,7 @@ struct History { versions: Vec<Version> }
 - **2e** reads `GET .../history` for the version modal and surfaces the merge
   flag (2b's `clean == false`).
 
-## Open decisions to confirm before coding 2c
+## Decisions (all five confirmed 2026-07-17 — recorded with rationale)
 
 1. **Postgres driver.** Recommending `sqlx::postgres` (async-native, migrations,
    compile-checked queries against a live schema). The alternative is
