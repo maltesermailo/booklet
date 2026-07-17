@@ -1,0 +1,18 @@
+[package]
+name = "booklet-sync-client"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+
+[dependencies]
+booklet-core = { path = "../booklet-core" }
+booklet-sync-proto = { path = "../booklet-sync-proto" }
+serde_json = "1"
+sha2 = "0.10"
+ureq = { version = "3.3", features = ["json"] }
+
+[dev-dependencies]
+booklet-sync-server = { path = "../booklet-sync-server" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "macros", "migrate"] }
+axum = "0.8"

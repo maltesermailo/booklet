@@ -13,7 +13,7 @@ walkdir = "2"
 notify = "8.2.0"
 
 [workspace]
-members = ["booklet-core"]
+members = ["booklet-core", "booklet-sync-proto", "booklet-sync-server", "booklet-sync-client"]
 resolver = "2"
 
 [build-dependencies]

@@ -1,0 +1,25 @@
+[package]
+name = "booklet-sync-server"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.87"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+sha2 = "0.10"
+zstd = "0.13"
+qbsdiff = "1.4"
+booklet-sync-proto = { path = "../booklet-sync-proto" }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "migrate", "macros"] }
+axum = "0.8.9"
+argon2 = "0.5.3"
+rpassword = "7.5.4"
+password-hash = { version = "0.5", features = ["getrandom"] }
+serde = { version = "1.0.228", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1.0.150"
+tower = { version = "0.5.3", features = ["util"] }

@@ -209,6 +209,19 @@ Deferred to the sync engine (2c/2d) — orchestration and I/O, not pure resoluti
 
 ### 2c — `booklet-sync-server`
 
+**Done 2026-07-17 (built in slices, see `design/sync-server.md`).** Crates:
+`booklet-sync-proto` (wire types), `booklet-sync-server` (blob store + Postgres +
+axum). The **delta-chained content-addressed blob store** (`src/blob.rs`, `qbsdiff`
+deltas + zstd checkpoints every K=50, orphan prune, corrupt-chain caught by
+re-hash) sits behind the content-hash interface. **PostgreSQL** schema
+(`migrations/0001_initial.sql`) with per-vault monotonic `seq` + per-file
+`version`, history + tombstones kept forever, blob chain metadata. **Multi-user
+auth**: argon2id passwords, device tokens (`sha256` at rest), ownership on every
+`/vaults/{id}/*` route (404 for another user's), CLI `serve` / `user create`.
+~9 routes, verified end-to-end over real TCP. **Deferred as planned:** the
+history-retention horizon / blob GC (bounded for now by the push debounce), and
+the M7 admin surface. The checkboxes below are all met except those.
+
 - [ ] **Multi-user** (decided while planning M7): a vault belongs to a user, a
       device token to a user's device, every route scoped by owner. Ownership has
       to be on the routes from the first commit — retrofitting means auditing every
@@ -246,6 +259,18 @@ Deferred to the sync engine (2c/2d) — orchestration and I/O, not pure resoluti
       HTTPS end-to-end, so CLAUDE.md holds. Cost: deploying is two things.
 
 ### 2d — Client sync engine
+
+**Core done 2026-07-17** in `booklet-sync-client` (Qt-free, blocking `ureq`).
+`Client` maps to every route; `engine::push`/`pull` reconcile a local vault
+against a server vault using 2a's `Manifest` and 2b's merge functions — a 409
+merges against the ancestor fetched from history, and a no-ancestor collision
+writes a conflict copy. **The integration test stands the real server up on a
+random port and drives two devices through publish → sync → 409-merge →
+conflict-copy** (the 2a–2d exit criterion, no UI). **Deferred to the app/UI
+wiring (2e / M5 sync pill):** the polling cadence (poll every ~30s + on
+focus/startup/after-push), the push debounce, the device-token file (chmod 0600),
+the publish/clone-refuse-non-empty UX, and driving it from a dedicated thread via
+`QmlMethodInvoker`. The engine itself is complete and tested.
 
 - [ ] **Blocking `ureq` on a dedicated thread.** The engine must be off the UI
       thread regardless, and a blocking call inside a thread you own is the
@@ -318,8 +343,10 @@ in Qt-free core and is unit-tested there; only its application lives here.**
 
 **Exit:** 2a–2d — two clients reconcile through the server, merging where they
 can and writing conflict copies where there is no ancestor, all verified by tests
-with no UI. 2e — the same driven through the app, with a flagged merge
-recoverable from history.
+with no UI. ✅ **Met 2026-07-17** — `booklet-sync-client/tests/integration.rs`
+drives two devices through the real server (basic sync, a 409-driven merge that
+converges, and a no-ancestor conflict copy). 2e — the same driven through the
+app, with a flagged merge recoverable from history — **still to do** (the UI step).
 
 **Design note written before 2c: `design/sync-server.md`** (2026-07-17). It pins
 the account model, the blob store, and the version feed — the parts expensive to

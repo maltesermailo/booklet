@@ -209,7 +209,9 @@ carry as an epoch `i64`.
 
 Bearer auth on every route except token issuance. Paths are vault-relative and
 `/`-joined, identical to the 2a manifest keys, so no path translation is needed
-on either side.
+on either side. (History is `GET /vaults/:id/history/*path`, not
+`…/entities/*path/history` — axum's trailing wildcard must be the last segment,
+so history could not hang off the same `entities/*path`.)
 
 | Method & route | Body → Response | Purpose |
 |---|---|---|
@@ -219,7 +221,7 @@ on either side.
 | `GET /vaults/:id/changes?since=N` | → `Changes` | The feed: every path with `seq > N`, plus the new cursor. |
 | `PUT /vaults/:id/entities/*path` | `PutRequest` → `PutResponse` \| **409** `Conflict` | Upload a create/modify/move. Stale base ⇒ 409. |
 | `DELETE /vaults/:id/entities/*path` | `{ base_version }` → `PutResponse` \| **409** | Tombstone a path. |
-| `GET /vaults/:id/entities/*path/history` | → `History` | Version list for the 2e history modal. |
+| `GET /vaults/:id/history/*path` | → `History` | Version list for the 2e history modal. |
 | `PUT /blobs/:hash` | bytes → 204 | Upload blob bytes (idempotent; hash verified). |
 | `GET /blobs/:hash` | → bytes | Fetch a note's content or a merge base. |
 
