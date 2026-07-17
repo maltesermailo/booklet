@@ -323,10 +323,13 @@ recoverable from history.
 
 **Design note written before 2c: `design/sync-server.md`** (2026-07-17). It pins
 the account model, the blob store, and the version feed — the parts expensive to
-change once written — into a buildable spec: the SQLite schema, the ~9 routes,
-the `booklet-sync-proto` wire types, and how they meet 2a's hashes and 2b's merge
-functions. Three implementation calls are flagged there for a yes before coding
-(sqlx vs rusqlite, the `moved_from` wire field, CLI subcommands).
+change once written — into a buildable spec: the PostgreSQL schema, a **Git-style
+delta-chained blob store** (a full checkpoint every K versions, exact binary
+deltas between — behind the content-hash interface, so the client never sees it),
+the ~9 routes, the `booklet-sync-proto` wire types, and how they meet 2a's hashes
+and 2b's merge functions. Five implementation calls are flagged there for a yes
+before coding (the Postgres driver, the `moved_from` wire field, CLI subcommands,
+the delta codec, and the checkpoint interval K).
 
 ## M3 — App adapters follow CLAUDE.md idioms
 

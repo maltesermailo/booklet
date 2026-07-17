@@ -21,7 +21,7 @@ where the schema must leave room for them.
 | Crate | Kind | Depends on | Holds |
 |---|---|---|---|
 | `booklet-sync-proto` | lib (new) | `serde` only | The wire types, shared by server and client so the contract cannot drift. |
-| `booklet-sync-server` | bin (new) | axum, tokio, sqlx, argon2, sha2, `booklet-sync-proto` | Routes, storage, auth, the CLI. |
+| `booklet-sync-server` | bin (new) | axum, tokio, sqlx (postgres), argon2, sha2, uuid, zstd + a delta codec, `booklet-sync-proto` | Routes, blob store, auth, the CLI. |
 | client engine (2d) | module in the app | `ureq`, `booklet-core`, `booklet-sync-proto` | Off-UI-thread sync loop. Not this note. |
 
 - **`booklet-sync-proto` is not part of `booklet-core`.** Putting the wire types
@@ -37,104 +37,157 @@ where the schema must leave room for them.
 
 ## Storage
 
-**Content-addressed blobs on disk + a SQLite metadata DB.** Reversed from the
+**Content-addressed blobs on disk + a PostgreSQL metadata DB.** Reversed from the
 first design pass (which mirrored plain markdown on the server): keeping version
 history forever makes a plain-file mirror expensive and makes content-addressing
-nearly free — a version is a blob, dedup comes built in. The accepted cost: the
-server's data directory is unreadable without the DB, and a corrupt DB is total
-loss rather than partial. Local disk stays plain markdown; CLAUDE.md's rule is
-about the client, and the client is untouched by this.
+nearly free — a version is a blob, stored **Git-style as a delta against the
+previous version**, and dedup comes built in. The accepted cost: the
+server's data directory is unreadable without the DB — the blobs are named only
+by their content hash, so the metadata is what makes them a vault. **The blob
+directory and the database must be backed up as one unit**, and a restore is only
+consistent if they were captured together. Local disk stays plain markdown;
+CLAUDE.md's rule is about the client, and the client is untouched by this.
 
-### Blobs
+### Blobs — content-addressed, stored as Git-style delta chains
 
-- One file per content hash: `blobs/<first two hex chars>/<full sha-256 hex>`.
-  The shard directory keeps any one directory from holding every blob.
-- **The hash is the SHA-256 the client already computed in 2a** (`sync.rs`
-  hashes every note with `sha2`). The client sends the digest; the server stores
-  the bytes only if that hash is absent. Same digest end to end, hashed once.
-- Written atomically (temp file + rename), the same discipline as 2a's manifest.
-- On upload the server **re-hashes and rejects a mismatch** — a blob whose name
-  lies is the one thing content-addressing must never accept.
-- Blobs are **never deleted** while history keeps every version (2c). No
-  refcount column yet; it would be dead weight until a retention horizon exists
-  (deferred, roadmap 2c). A blob, once stored, stays.
+The store's *interface* is content-addressed: `get(hash) -> bytes` and
+`put(hash, bytes)`. The client only ever sees hashes — the SHA-256 it already
+computed in 2a (`sync.rs` hashes every note with `sha2`) — so how the bytes are
+physically kept is entirely the server's business and can change without touching
+the protocol.
 
-### SQLite, via `sqlx`
+Physically, a note revised many times is the common case, and storing each
+version whole would grow history by (versions × note size). So versions are
+packed **Git-style: a full checkpoint every K versions, and a delta against the
+previous version in between.** Full checkpoints are plain zstd; the deltas are
+where the storage saving comes from.
 
-SQLite because a self-hosted personal server wants one file it can back up, not a
-second daemon to run. `sqlx` (async, compile-checked queries, built-in
-migrations) over `rusqlite` because the server is `tokio` and `sqlx::sqlite`
-speaks async natively without a `spawn_blocking` wrapper around every query. WAL
-mode on. *(This is the load-bearing dependency choice — see Open decisions.)*
+- **One file per content hash**, sharded: `blobs/<first two hex chars>/<full
+  sha-256 hex>`, so no directory holds every blob. The file's *bytes* are a full
+  zstd blob or a delta; the metadata row says which.
+- **Interface & dedup.** `put(hash, bytes)` is a no-op when `hash` already
+  exists — identical content (a revert, or the same note in two books) is stored
+  once. The digest is the SHA-256 from 2a; hashed once, end to end.
+- **The base is the path's own lineage.** History is linear per (vault, path):
+  version N's delta base is version N-1's blob. No similarity search — Git's hard
+  part — is needed, because the lineage names the base. So delta encoding happens
+  at the **entity mutation**, not the blob upload: the client uploads the blob
+  whole (`PUT /blobs/:hash`), and when the entity PUT lands — the moment the
+  server knows the path, and thus the base — the new blob is re-encoded as a
+  delta against the previous version's blob.
+- **Bounded chains.** Each blob row carries `depth` (deltas back to a full). If
+  encoding version N as a delta would push depth past K, it is stored as a full
+  checkpoint (`depth = 0`) instead. Reconstruction walks `base_hash` back to a
+  full and applies deltas forward — at most K small applies.
+- **Exact and verified.** The delta must reconstruct byte-for-byte — the merge
+  base and the recovery path depend on it — so **`diff-match-patch` is *not*
+  usable here** (it matches fuzzily; that is 2b's job, not storage). The codec is
+  an exact binary delta (`zstd --patch-from` or `qbsdiff`; see Open decisions).
+  After reconstructing, the server **re-hashes and checks the result equals the
+  requested hash**, so a broken chain is caught, never served. Upload likewise
+  rejects a blob whose bytes do not hash to its name.
+- **Forever-history keeps chains stable.** No blob is ever deleted while history
+  is kept (2c), so a delta's base never vanishes and chains never need repair. A
+  later retention horizon (deferred, roadmap 2c) must re-materialize any delta
+  whose base it removes — noted so the coupling is not a surprise.
+- Files are written atomically (temp + rename), the discipline from 2a's manifest.
+
+This is the store's most intricate part, and also its most isolated — everything
+above `get`/`put` deals only in hashes.
+
+### PostgreSQL, via `sqlx`
+
+PostgreSQL (chosen over the earlier SQLite pick). It costs a second daemon to run
+and back up, but this is a **multi-user** server where several devices PUT at
+once, and Postgres handles concurrent writers properly rather than serializing
+them behind SQLite's single-writer lock. It also turns "a corrupt DB is total
+loss" from a single-file gamble into an operational problem with known tools
+(PITR, replication, `pg_dump`). `sqlx::postgres` for the driver — async-native
+under `tokio`, compile-checked queries, built-in migrations. Requires
+**PostgreSQL 13+** so `gen_random_uuid()` is in core (older versions need the
+`pgcrypto` extension enabled).
 
 ```sql
 CREATE TABLE users (
-  id            INTEGER PRIMARY KEY,
+  id            BIGSERIAL PRIMARY KEY,
   handle        TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,              -- argon2id
-  is_admin      INTEGER NOT NULL DEFAULT 0, -- M7 uses it; one flag, not a roles table
-  disabled      INTEGER NOT NULL DEFAULT 0,
-  created_at    INTEGER NOT NULL,
-  last_seen_at  INTEGER
+  password_hash TEXT NOT NULL,                    -- argon2id
+  is_admin      BOOLEAN NOT NULL DEFAULT FALSE,   -- M7 uses it; one flag, not a roles table
+  disabled      BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at  TIMESTAMPTZ
 );
 
 CREATE TABLE devices (
-  id           INTEGER PRIMARY KEY,
-  user_id      INTEGER NOT NULL REFERENCES users(id),
+  id           BIGSERIAL PRIMARY KEY,
+  user_id      BIGINT NOT NULL REFERENCES users(id),
   name         TEXT NOT NULL,
   platform     TEXT NOT NULL,
-  token_hash   TEXT UNIQUE NOT NULL,        -- sha-256(token); see Auth
-  issued_at    INTEGER NOT NULL,
-  last_seen_at INTEGER,
-  revoked_at   INTEGER                      -- non-null = dead; the reason M7 exists
+  token_hash   TEXT UNIQUE NOT NULL,              -- sha-256(token); see Auth
+  issued_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_seen_at TIMESTAMPTZ,
+  revoked_at   TIMESTAMPTZ                         -- non-null = dead; the reason M7 exists
 );
 
 CREATE TABLE vaults (
-  id         TEXT PRIMARY KEY,              -- uuid; this is the vault_id the client stores in .booklet/sync.json
-  user_id    INTEGER NOT NULL REFERENCES users(id),
+  id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- the vault_id the client stores in .booklet/sync.json
+  user_id    BIGINT NOT NULL REFERENCES users(id),
   name       TEXT NOT NULL,
-  seq        INTEGER NOT NULL DEFAULT 0,    -- monotonic per-vault sequence; every mutation bumps it
-  created_at INTEGER NOT NULL
+  seq        BIGINT NOT NULL DEFAULT 0,            -- monotonic per-vault sequence; every mutation bumps it
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- Current state, one row per path. This is what GET /changes scans.
 CREATE TABLE entities (
-  vault_id   TEXT NOT NULL REFERENCES vaults(id),
-  path       TEXT NOT NULL,                 -- vault-relative, '/'-joined (matches 2a manifest keys)
-  kind       TEXT NOT NULL,                 -- 'note' | 'bookmeta' | 'folder'
-  version    INTEGER NOT NULL,              -- per-file, bumped each mutation; sent as the PUT base
-  seq        INTEGER NOT NULL,              -- vault seq of the latest mutation
-  blob       TEXT,                          -- content hash; NULL for folders and deletes
-  deleted    INTEGER NOT NULL DEFAULT 0,    -- a tombstone stays as a row so the feed can carry it
-  moved_from TEXT,                          -- set on the mutation that was a move; else NULL
+  vault_id   UUID NOT NULL REFERENCES vaults(id),
+  path       TEXT NOT NULL,                        -- vault-relative, '/'-joined (matches 2a manifest keys)
+  kind       TEXT NOT NULL,                        -- 'note' | 'bookmeta' | 'folder'
+  version    BIGINT NOT NULL,                      -- per-file, bumped each mutation; sent as the PUT base
+  seq        BIGINT NOT NULL,                      -- vault seq of the latest mutation
+  blob       TEXT,                                 -- content hash; NULL for folders and deletes
+  deleted    BOOLEAN NOT NULL DEFAULT FALSE,       -- a tombstone stays as a row so the feed can carry it
+  moved_from TEXT,                                 -- set on the mutation that was a move; else NULL
   PRIMARY KEY (vault_id, path)
 );
 CREATE INDEX entities_feed ON entities(vault_id, seq);
 
 -- History, forever. The recovery path for a bad merge and the base for the next one.
 CREATE TABLE entity_versions (
-  vault_id   TEXT NOT NULL,
+  vault_id   UUID NOT NULL,
   path       TEXT NOT NULL,
-  version    INTEGER NOT NULL,
-  seq        INTEGER NOT NULL,
-  blob       TEXT,                          -- NULL = tombstone or folder
-  deleted    INTEGER NOT NULL DEFAULT 0,
+  version    BIGINT NOT NULL,
+  seq        BIGINT NOT NULL,
+  blob       TEXT,                                 -- NULL = tombstone or folder
+  deleted    BOOLEAN NOT NULL DEFAULT FALSE,
   moved_from TEXT,
-  device_id  INTEGER REFERENCES devices(id),
-  created_at INTEGER NOT NULL,
+  device_id  BIGINT REFERENCES devices(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (vault_id, path, version)
 );
 
 CREATE TABLE blobs (
-  hash       TEXT PRIMARY KEY,              -- sha-256 hex
-  size       INTEGER NOT NULL,
-  created_at INTEGER NOT NULL
+  hash        TEXT PRIMARY KEY,                    -- sha-256 hex of the ORIGINAL (uncompressed) content
+  size        BIGINT NOT NULL,                     -- original content length
+  stored_size BIGINT NOT NULL,                     -- bytes actually on disk (the delta or the zstd full)
+  encoding    TEXT NOT NULL,                       -- 'full' | 'delta'
+  base_hash   TEXT REFERENCES blobs(hash),         -- NULL for a full checkpoint; else the delta base
+  depth       INTEGER NOT NULL DEFAULT 0,          -- deltas back to a full; bounds reconstruction (<= K)
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 ```
+
+`size` vs `stored_size` is also what feeds M7's blob-store-health page: the ratio
+is how the operator sees the delta packing working (or not).
 
 `entities` is derivable from `entity_versions` (it is the max-version row per
 path), but keeping it materialized makes the two hot operations — the feed scan
 and the PUT conflict check — single-row/single-index reads instead of aggregates.
+
+The vault UUID is **server-generated** (`gen_random_uuid()` on `POST /vaults`),
+which is why the client's `SyncState.vault_id` is `None` until publish. `seq` and
+`version` are `BIGINT`; `created_at` is a real `TIMESTAMPTZ` (display metadata
+only — ordering is by `seq`/`version`, never by clock), which the wire types
+carry as an epoch `i64`.
 
 ## The protocol
 
@@ -255,8 +308,12 @@ struct History { versions: Vec<Version> }
 - Binds `127.0.0.1`, speaks **HTTP**; TLS terminates at a reverse proxy
   (Caddy/nginx), which already solves certificates. Transport stays HTTPS end to
   end, so CLAUDE.md holds; binding to loopback also hands M7 its localhost-only
-  `/admin` for free. Cost: deploying is two things (server + proxy).
-- Config via a small file or env: DB path, blob directory, bind address.
+  `/admin` for free.
+- **Deploying is three moving parts** now: the server, the reverse proxy, and a
+  PostgreSQL instance the server can reach. Postgres can sit on the same box
+  (loopback) for a personal deployment.
+- Config via a small file or env: the **database URL**, the blob directory, and
+  the bind address.
 
 ## How it ties to what already exists
 
@@ -274,10 +331,11 @@ struct History { versions: Vec<Version> }
 
 ## Open decisions to confirm before coding 2c
 
-1. **`sqlx` vs `rusqlite`.** Recommending `sqlx::sqlite` (async-native, migrations,
-   compile-checked queries). `rusqlite` is lighter and synchronous — simpler, but
-   every query then needs `spawn_blocking` under `tokio`. Load-bearing and
-   awkward to switch later, so worth an explicit yes.
+1. **Postgres driver.** Recommending `sqlx::postgres` (async-native, migrations,
+   compile-checked queries against a live schema). The alternative is
+   `tokio-postgres` + a pool (`deadpool`/`bb8`) — lighter, but hand-rolled
+   migrations and no compile-time query checking. Awkward to switch later, so
+   worth an explicit yes.
 2. **Move representation.** `moved_from` on the PUT collapses a note move into one
    feed entry now, even though 2a only detects note moves. Fine to include the
    field and leave folder moves for later, or drop it from 2c and treat every
@@ -286,6 +344,16 @@ struct History { versions: Vec<Version> }
 3. **One binary or a `serve` subcommand.** Recommending subcommands (`serve` /
    `user create`) so account bootstrap and the server share one deployable file,
    matching M7's `admin grant`.
+4. **Delta codec.** The chain design is codec-independent; the codec just has to
+   be an exact, lossless binary delta. `qbsdiff` (bsdiff/bspatch, pure Rust,
+   purpose-built for deltas between similar files) is the straightforward pick;
+   `zstd --patch-from` (reference-prefix mode) folds delta and compression into
+   the one crate but its Rust binding for ref-prefix is less ergonomic. Small,
+   swappable, but worth naming before coding.
+5. **Checkpoint interval K.** How many deltas before a full checkpoint. Suggesting
+   **~50** — reconstruction then touches at most 50 small applies, and a note
+   revised 50 times costs one full plus 49 deltas rather than 50 fulls. Pure
+   tuning, changeable any time (it only affects newly written chains).
 
 ## Test plan (2c/2d)
 
