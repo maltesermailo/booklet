@@ -81,7 +81,20 @@ this milestone hurts.**
 
 ### 2a — Local change tracking
 
-- [ ] **A note is its path; a move is inferred from content.** A delete and a
+**Done 2026-07-17** in `booklet-core/src/sync.rs` (Qt-free, 7 unit tests, no
+consumer yet by design — 2d is where the changeset gets uploaded). `Manifest`
+snapshots every synced entity; `Manifest::scan(vault, &previous)` reads the vault
+against a prior snapshot and `Manifest::diff(old, new)` produces the `Change`
+list. `SyncState` carries `vault_id` / `server_url` / `cursor`, settled now but
+unset until publish (2c/2d populate them). Hash is **SHA-256** (`sha2`), so the
+digest doubles as 2c's content-address. Two deliberate deltas from the notes
+below: mtime is stored at **nanosecond** resolution, not milliseconds — a
+millisecond gate missed a same-length in-place edit landing in the same
+millisecond (the `last_opened` seconds→millis tie, one rung finer); and the
+manifest is written with a **real temp-file+rename**, since `config.rs::save`
+turned out to use a plain `fs::write` despite the claim below.
+
+- [x] **A note is its path; a move is inferred from content.** A delete and a
       create in one sync window whose hashes match is recorded as a move, which is
       what CLAUDE.md's "when avoidable" asks for. Nothing is written into the
       markdown: a UUID in frontmatter would survive rename+edit, but the editor is
@@ -89,21 +102,23 @@ this milestone hurts.**
       as literal text atop every note. **Known gap:** a note renamed *and* edited
       offline degrades to delete+create. That is the case "when avoidable"
       concedes.
-- [ ] **State lives in `.booklet/` inside the vault** — manifest, server binding,
+- [x] **State lives in `.booklet/` inside the vault** — manifest, server binding,
       cursor, vault id. Obsidian's `.obsidian/` precedent. It travels with the
       vault, so a copied or restored folder keeps its binding, and the **vault id
       is how a cloned folder knows which server vault it is** rather than guessing
       from an absolute path that differs per machine. All of it is derived: delete
       `.booklet/` and you pay a rescan, nothing more. **`.booklet/` never syncs** —
-      it is device-local by definition.
-- [ ] **Manifest is plain JSON**, written and renamed atomically, exactly as
-      `config.rs` already does. No new dependency, readable by a person; a few
-      thousand notes is a few hundred KB.
-- [ ] **mtime+size gate, hash decides.** Hash only what the gate flags, so a quiet
+      it is device-local by definition. (Split across `manifest.json` and
+      `sync.json`, by how often each changes.)
+- [x] **Manifest is plain JSON**, written and renamed atomically (a real
+      temp+rename — see the note above; `config.rs` does not actually do this). No
+      new dependency for the manifest itself, readable by a person; a few thousand
+      notes is a few hundred KB.
+- [x] **mtime+size gate, hash decides.** Hash only what the gate flags, so a quiet
       vault costs one stat per file, and a touched-but-unchanged file never
       uploads. A backup restore resets mtimes and triggers a rehash — correct, and
-      briefly slow.
-- [ ] **Folders are sync entities, not an accident of paths.** *Against the
+      briefly slow. (Gate stores mtime in nanoseconds; see the note above.)
+- [x] **Folders are sync entities, not an accident of paths.** *Against the
       recommendation, deliberately:* 5d gives the user a real "New section" button,
       and a git-style file-only protocol would leave a section made on one device
       invisible on the other until a note landed in it. It also fixes books — a
@@ -113,48 +128,84 @@ this milestone hurts.**
       or it is not a move; and **a folder delete propagates only when the folder is
       empty on the receiving side**, or a delete takes files with it that the
       deleting device never saw.
+      - **Deferred within 2a:** folders are tracked and emit created/deleted, but
+        *folder-move-as-one-entry* is not built — a renamed folder degrades to
+        delete+create (its notes ride along). A folder has no content hash to
+        match on, and coalescing the move only means something at upload time
+        against the server's folder semantics, which do not exist until 2c/2d.
+        Same shape as the note rename+edit concession above; a test pins the
+        degraded behavior so 2d revisits it knowingly.
 - [ ] The watcher already exists (`src/library.rs`) and already calls `refresh` on
       every write. Sync hangs off those events rather than growing a second
-      watcher.
+      watcher. **(Deferred to 2d — 2a has no consumer, so nothing is wired to the
+      watcher yet.)**
 
 ### 2b — Merge and conflict rules
 
-- [ ] **Three-way merge via `diff-match-patch-rs`**, computed in Qt-free core as a
+**Done 2026-07-17** in `booklet-core/src/merge.rs` (Qt-free, 10 unit tests). The
+pure resolution primitives the sync engine will call: `merge_markdown`,
+`merge_booklet_json`, `conflict_copy_name`. Crate is **`diff-match-patch-rs`
+0.5.1** in **`Compat` mode** (operates on `char`s, so the vault's German/Greek
+survives; `Efficient`/`u8` mode would risk splitting a codepoint). Two findings
+worth carrying forward, both proven with a throwaway probe:
+- The fuzzy apply is **very** lenient — two edits that share surrounding text
+  merge to a garbled result reported as *clean*. That is the duplicated-sections
+  bug in the flesh; `clean = false` only fires on a hard match failure, which is
+  exactly why the flag alone is not enough and version history (2c) is the real
+  safety net.
+- `patch_apply` can **panic** (an internal `attempt to subtract with overflow`)
+  on some inputs, not just return `Err`. `merge_markdown` wraps the call in
+  `catch_unwind` and reports a panic as a failure, so one pathological note can
+  never take the sync thread down. A test pins this.
+
+- [x] **Three-way merge via `diff-match-patch-rs`**, computed in Qt-free core as a
       pure `(base, local, remote) -> (merged, per-hunk applied)`. Note DMP is *not*
       a merge library: the merge is `patch_make(base→local)` applied onto remote,
       matching fuzzily. **That fuzziness is Obsidian's duplicated-sections bug**,
       not a side effect of it. Chosen anyway over `diffy`'s diff3, which never
       corrupts silently but writes `<<<<<<<` markers into prose and diffs by line —
-      coarse when a paragraph is one long line.
+      coarse when a paragraph is one long line. (`MarkdownMerge { text, clean }`;
+      `clean` is `applied.iter().all(..)`.)
+- [x] **A partial merge is accepted and the note is flagged**, rather than falling
+      back to a conflict copy. *Against the recommendation.* It is defensible only
+      because history exists — a merge that duplicates a section is recoverable
+      from the version before it. **These two decisions are load-bearing for each
+      other: dropping history makes this one reckless.** (`clean == false` is the
+      flag signal; the merged text is still returned and usable.)
+- [x] **Conflict copies survive for exactly one case — no common ancestor.** Two
+      devices independently create the same filename, so there is nothing to merge
+      from. `Note (conflict 2026-07-15).md`; a second conflict the same day needs a
+      suffix (`… 2).md`, inside the parenthetical). Obsidian punts on this same
+      case. Conflict copies are ordinary markdown and so sync everywhere for free,
+      which puts the losing text on whichever machine you happen to be at.
+      (`conflict_copy_name(stem, date, taken)`; `date` is passed in so the module
+      stays time-free and deterministic — the caller formats it.)
+- [x] **`booklet.json` merges by key overlay** — local keys over remote, Obsidian's
+      approach for its settings JSON. It cannot emit invalid JSON (a text merge
+      can), binding colour and shelf label are independent fields so key grain is
+      the right grain, and it preserves 5g's promise that unknown keys survive.
+      (If either side is not a JSON object — a hand-mangled file — no merge is
+      attempted and local is returned unchanged, so the merge never manufactures
+      invalid JSON nor drops local content.)
+- [x] Unit-test the resolution matrix over `(base, local, remote)` triples. No
+      network, no Qt.
+
+Deferred to the sync engine (2c/2d) — orchestration and I/O, not pure resolution:
+
 - [ ] **The base comes from the server**, not a local shadow copy: 2c keeps
       history, so the ancestor is a fetch away. Merging only happens during a sync
       and a sync means a connection, so this costs offline-first nothing. It does
       mean **the server's storage is history-shaped from the first commit** (2c).
-- [ ] **A partial merge is accepted and the note is flagged**, rather than falling
-      back to a conflict copy. *Against the recommendation.* It is defensible only
-      because history exists — a merge that duplicates a section is recoverable
-      from the version before it. **These two decisions are load-bearing for each
-      other: dropping history makes this one reckless.**
-- [ ] **Conflict copies survive for exactly one case — no common ancestor.** Two
-      devices independently create the same filename, so there is nothing to merge
-      from. `Note (conflict 2026-07-15).md`; a second conflict the same day needs a
-      suffix. Obsidian punts on this same case. Conflict copies are ordinary
-      markdown and so sync everywhere for free, which puts the losing text on
-      whichever machine you happen to be at.
 - [ ] **Whoever syncs first keeps the name**, when it comes to that: the server
       409s a stale PUT and the loser reconciles. Deterministic, no clock trust —
       two machines' clocks disagree and mtime-LWW picks the wrong winner silently.
       This is really *first*-write-wins, a second deviation from CLAUDE.md's
       wording; with merging primary it now only decides the no-ancestor case.
-- [ ] **`booklet.json` merges by key overlay** — local keys over remote, Obsidian's
-      approach for its settings JSON. It cannot emit invalid JSON (a text merge
-      can), binding colour and shelf label are independent fields so key grain is
-      the right grain, and it preserves 5g's promise that unknown keys survive.
 - [ ] **Deletes land in the system Trash** on the receiving device — the same
-      `trash` crate 5d uses. A sync bug or a mis-click on another machine then
-      costs nothing permanent, which matters most while the sync code is newest.
-- [ ] Unit-test the resolution matrix over `(base, local, remote)` triples. No
-      network, no Qt.
+      `trash` crate 5d uses (already a `booklet-core` dependency). A sync bug or a
+      mis-click on another machine then costs nothing permanent, which matters most
+      while the sync code is newest. This is an apply step during sync, so it lands
+      with the client engine rather than in the pure merge module.
 
 ### 2c — `booklet-sync-server`
 
@@ -270,9 +321,12 @@ can and writing conflict copies where there is no ancestor, all verified by test
 with no UI. 2e — the same driven through the app, with a flagged merge
 recoverable from history.
 
-Still recommended: a short design note before 2c. The account model, the blob
-store and the version feed are the parts that are expensive to change once
-written.
+**Design note written before 2c: `design/sync-server.md`** (2026-07-17). It pins
+the account model, the blob store, and the version feed — the parts expensive to
+change once written — into a buildable spec: the SQLite schema, the ~9 routes,
+the `booklet-sync-proto` wire types, and how they meet 2a's hashes and 2b's merge
+functions. Three implementation calls are flagged there for a yes before coding
+(sqlx vs rusqlite, the `moved_from` wire field, CLI subcommands).
 
 ## M3 — App adapters follow CLAUDE.md idioms
 
@@ -318,6 +372,14 @@ Apply the idiom fixes here (they were the original scaffold-rewrite items):
 - [x] **Books / shelf view** — `ShelfView.qml`, a full-window mode (⌘L, `Esc` to
       leave). Spines grouped by shelf label, sized by note count, colored by
       binding; picking one calls `Engine::reveal` to open it in the tree.
+      - **It shipped with no button** — ⌘L was the only way in, so the one screen
+        that shows a vault's books could only be found by being told about it.
+        Reported as "I can switch between Vaults but not between booklets", which
+        is exactly right: switching vaults had a visible topbar menu and browsing
+        the books inside one had nothing. It now has a topbar button beside that
+        menu. The reference draws no shelf at all, so it dictates no placement
+        here; beside the vault menu is ours, on the grounds that the two are the
+        same errand a level apart.
 - [x] **Quick switcher (⌘K)** — `Engine::notes()` lists every note with a
       breadcrumb; `QuickSwitcher.qml` filters and opens. Navigation spans all
       vaults (unlike links, which stay in one vault).

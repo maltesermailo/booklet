@@ -192,6 +192,7 @@ ApplicationWindow {
             onShowMarginalia: root.marginaliaVisible = true
             onOpenSettings: settingsView.open()
             onOpenPicker: root.pickerOpen = true
+            onOpenShelf: root.shelfOpen = true
         }
 
         SplitView {
@@ -253,6 +254,36 @@ ApplicationWindow {
 
         Notice { Layout.fillWidth: true }
         StatusBar { Layout.fillWidth: true }
+    }
+
+    // While a name is being typed in the tree, a press anywhere but the field
+    // itself closes it. The field already cancels on focus-out, but only the
+    // editor (a TextArea) actually takes focus on a click — every other surface
+    // (tree rows, the topbar, the panes, empty space) is a MouseArea or a
+    // Control that leaves the field focused, so the caret would linger. This
+    // overlay, live only while a field is up, is the one place that press is
+    // caught wherever it lands. A press on the field is passed through so its
+    // caret can still be placed; every other press dismisses (and is consumed —
+    // it closes the field rather than also acting, which keeps the behaviour the
+    // same whatever lies beneath). It sits below the full-window modes and is
+    // inert unless the tree is editing, which only happens in the reading view.
+    MouseArea {
+        id: editDismissOverlay
+        anchors.fill: parent
+        enabled: treePane.isEditing
+        acceptedButtons: Qt.AllButtons
+        onPressed: (mouse) => {
+            var field = treePane.editField
+            if (field) {
+                var local = mapToItem(field, mouse.x, mouse.y)
+                if (local.x >= 0 && local.y >= 0
+                        && local.x < field.width && local.y < field.height) {
+                    mouse.accepted = false
+                    return
+                }
+            }
+            treePane.cancelEdit()
+        }
     }
 
     // One full-window mode at a time; two stacked would strand the lower one.

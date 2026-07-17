@@ -20,7 +20,7 @@ const DEFAULT_COLOR: &str = "#4A5560";
 pub const BINDING_PALETTE: [&str; 6] =
     ["#7C3128", "#2F3E5C", "#3C5240", "#A8842C", "#55364F", "#4A5560"];
 const DEFAULT_SHELF: &str = "Library";
-const BOOK_METADATA_FILE: &str = "booklet.json";
+pub(crate) const BOOK_METADATA_FILE: &str = "booklet.json";
 
 /// A row in the flattened tree handed to QML. A plain view DTO; behavior lives
 /// on the nodes.

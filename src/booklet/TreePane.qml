@@ -20,6 +20,12 @@ Rectangle {
     property string editParent: ""
     property string editId: ""
 
+    // Exposed so a window-level overlay can close the inline field on a press
+    // anywhere but the field itself. `editField` is the live name field while
+    // one is up (see `beginEditing`), null otherwise.
+    readonly property bool isEditing: editMode !== ""
+    property Item editField: null
+
     signal hideRequested()
     signal searchRequested()
 
@@ -93,6 +99,7 @@ Rectangle {
         pane.editMode = ""
         pane.editParent = ""
         pane.editId = ""
+        pane.editField = null
     }
 
     function commitEdit(text) {
@@ -302,12 +309,29 @@ Rectangle {
                     radius: 3
                 }
 
-                onVisibleChanged: {
-                    if (visible) {
-                        forceActiveFocus()
-                        selectAll()
-                    }
+                function beginEditing() {
+                    pane.editField = nameField
+                    nameField.forceActiveFocus()
+                    nameField.selectAll()
                 }
+
+                // Two triggers, because the two edits arrive by different routes.
+                // Rename reuses the row's own delegate, so the field really does
+                // flip from hidden to shown and onVisibleChanged catches it. A
+                // new note or section splices in a placeholder row whose delegate
+                // is *born* editing: visible starts true and never changes, so
+                // Component.onCompleted is the only hook it has.
+                //
+                // Deferred there, and only there: at Component.onCompleted the
+                // delegate is not in the view yet, so focus does not stick. It is
+                // handed straight back, the focus-out guard below reads that as
+                // "clicked away" and calls cancelEdit, and since editMode is what
+                // visibleRows is built from, the binding loops and the field is
+                // gone before you can type. callLater waits for the view to take
+                // the delegate. Rename needs no such wait — its delegate is
+                // already in there.
+                Component.onCompleted: if (visible) Qt.callLater(nameField.beginEditing)
+                onVisibleChanged: if (visible) nameField.beginEditing()
                 Keys.onReturnPressed: pane.commitEdit(nameField.text)
                 Keys.onEnterPressed: pane.commitEdit(nameField.text)
                 Keys.onEscapePressed: pane.cancelEdit()
@@ -346,15 +370,45 @@ Rectangle {
         property string targetTitle: ""
         property string targetKind: ""
 
-        AppMenuItem { text: "New note"; onTriggered: pane.startCreate("note") }
-        AppMenuItem { text: "New section"; onTriggered: pane.startCreate("section") }
+        // The three actions below open the inline name field, and the field takes
+        // the caret. A Popup restores focus to whatever held it when it opened,
+        // and that restore lands *after* onTriggered — once the exit transition
+        // has run, ~110ms later. So the field appeared, took focus, and had it
+        // pulled straight back out, which the field's focus-out guard reads as
+        // "clicked away" and cancels: the name field vanished the instant it
+        // appeared. Nothing shorter than the animation can win that race, so the
+        // action waits for the menu to actually be gone.
+        //
+        // Binding… and Delete… open their own dialogs and are left alone: they do
+        // not depend on holding the caret, and this only bites what does.
+        property var pendingAction: null
+        onClosed: {
+            var action = rowMenu.pendingAction
+            rowMenu.pendingAction = null
+            if (action)
+                action()
+        }
+
+        AppMenuItem {
+            text: "New note"
+            onTriggered: rowMenu.pendingAction = () => pane.startCreate("note")
+        }
+        AppMenuItem {
+            text: "New section"
+            onTriggered: rowMenu.pendingAction = () => pane.startCreate("section")
+        }
         MenuSeparator {
             contentItem: Rectangle {
                 implicitHeight: 1
                 color: Theme.pageLine
             }
         }
-        AppMenuItem { text: "Rename…"; onTriggered: pane.startRename(rowMenu.targetId) }
+        AppMenuItem {
+            text: "Rename…"
+            // targetId is read when the menu closes, not now; nothing clears it
+            // in between.
+            onTriggered: rowMenu.pendingAction = () => pane.startRename(rowMenu.targetId)
+        }
         // Only a book has a binding: sections and notes are not bound.
         AppMenuItem {
             text: "Binding…"
