@@ -37,17 +37,33 @@ Popup {
 
     property var vaults: []
     property int category: 0
+    property bool signedIn: false
 
-    readonly property var categories: ["Vaults", "Appearance", "Editor", "About"]
+    // Opening the sign-in / clone dialogs, which live in Main.
+    signal signInRequested()
+    signal cloneRequested()
+
+    readonly property var categories: ["Vaults", "Appearance", "Editor", "Sync", "About"]
+
+    function activeVaultName() {
+        var active = settings.vaults.find(function (vault) { return vault.active })
+        return active ? active.name : "Vault"
+    }
 
     function reload() {
         settings.vaults = JSON.parse(Library.vaults())
+        settings.signedIn = Sync.is_signed_in()
         sizeSlider.value = Library.editor_font_size()
         scaleSlider.value = Library.ui_scale()
         densitySlider.value = Library.density()
     }
 
     onOpened: reload()
+
+    Connections {
+        target: Sync
+        function onSigned_in(ok) { settings.signedIn = ok }
+    }
 
     Connections {
         target: Library
@@ -449,6 +465,86 @@ Popup {
                             font.pixelSize: Math.round(sizeSlider.value)
                             wrapMode: Text.Wrap
                         }
+                    }
+                }
+
+                // Sync -----------------------------------------------------
+                SettingsPane {
+                    title: "Sync"
+                    blurb: "Sync this vault against a self-hosted server. Notes stay "
+                         + "plain markdown on disk; the server holds the history."
+
+                    Rectangle {
+                        width: parent.width
+                        height: Theme.row(46)
+                        color: Theme.panel
+                        border.color: Theme.pageLine
+                        border.width: 1
+                        radius: Theme.radiusCard
+
+                        Rectangle {
+                            id: syncDot
+                            anchors.left: parent.left
+                            anchors.leftMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            width: 8
+                            height: 8
+                            radius: 4
+                            color: settings.signedIn ? Theme.brass : Theme.textDim
+                        }
+                        Text {
+                            anchors.left: syncDot.right
+                            anchors.leftMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            text: settings.signedIn ? "Signed in to a sync server" : "Not signed in"
+                            color: Theme.textBright
+                            font.family: Theme.ui
+                            font.pixelSize: Theme.px(13)
+                        }
+                        TextButton {
+                            anchors.right: parent.right
+                            anchors.rightMargin: 12
+                            anchors.verticalCenter: parent.verticalCenter
+                            label: settings.signedIn ? "Sign out" : "Sign in…"
+                            onClicked: {
+                                if (settings.signedIn)
+                                    Sync.sign_out()
+                                else
+                                    settings.signInRequested()
+                            }
+                        }
+                    }
+
+                    Text {
+                        text: "THIS VAULT"
+                        color: Theme.brass
+                        font.family: Theme.ui
+                        font.pixelSize: Theme.px(11)
+                        font.letterSpacing: 1.5 * Theme.uiScale
+                    }
+                    Row {
+                        width: parent.width
+                        spacing: 10
+
+                        TextButton {
+                            label: "Publish this vault"
+                            enabled: settings.signedIn
+                            onClicked: Sync.publish(settings.activeVaultName())
+                        }
+                        TextButton {
+                            label: "Clone a server vault…"
+                            enabled: settings.signedIn
+                            onClicked: settings.cloneRequested()
+                        }
+                    }
+                    Text {
+                        width: parent.width
+                        text: "Publishing binds this vault to a new server vault and uploads it. "
+                            + "Cloning pulls an existing server vault into a new local folder."
+                        color: Theme.textSoft
+                        font.family: Theme.ui
+                        font.pixelSize: Theme.px(12)
+                        wrapMode: Text.Wrap
                     }
                 }
 

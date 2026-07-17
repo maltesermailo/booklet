@@ -3,6 +3,7 @@ use qtbridge::QApp;
 mod library;
 mod links;
 mod note;
+mod sync;
 
 /// The bundled OFL fonts, compiled by build.rs (see src/booklet/fonts.qrc and
 /// COPYRIGHT.md). They are too large for `include_bytes_qml!`, which would turn
@@ -52,6 +53,9 @@ fn main() {
     qtbridge::include_bytes_qml!("booklet/AppMenuItem.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/TopBar.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/StatusBar.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/SignInDialog.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/VersionHistory.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/CloneDialog.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/Notice.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/TabStrip.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/IconButton.qml", "qt/qml");
@@ -60,7 +64,8 @@ fn main() {
     let mut app = QApp::new();
     app.register::<library::Library>()
         .register::<note::NoteEditor>()
-        .register::<links::Backlinks>();
+        .register::<links::Backlinks>()
+        .register::<sync::Sync>();
 
     // SAFETY: a plain qmlRegisterType call, made after the application exists
     // and before any QML is loaded.

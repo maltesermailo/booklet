@@ -68,13 +68,21 @@ pub struct Manifest {
 }
 
 /// The vault's binding to a server: which server vault it is, where the server
-/// lives, and how far its change feed has been read. Settled here so 2c/2d only
-/// populate fields; unset until the vault is published.
+/// lives, how far its change feed has been read, and the server version last
+/// confirmed for each path (the `base_version` a push sends). Persisted in
+/// `.booklet/sync.json`; the client engine loads it on start and saves it after
+/// each cycle.
 #[derive(Serialize, Deserialize, Default, PartialEq, Debug)]
 pub struct SyncState {
     pub vault_id: Option<String>,
     pub server_url: Option<String>,
     pub cursor: u64,
+    #[serde(default)]
+    pub versions: std::collections::HashMap<String, u64>,
+    /// Notes whose last merge was partial, awaiting the user's review. Persisted
+    /// so a flag survives a restart until it is dismissed.
+    #[serde(default)]
+    pub flagged: Vec<String>,
 }
 
 /// A single difference between two manifests. `Moved` is inferred for notes only
@@ -515,6 +523,11 @@ mod tests {
             vault_id: Some("vault-42".into()),
             server_url: Some("https://notes.example".into()),
             cursor: 17,
+            versions: std::collections::HashMap::from([
+                ("Book/Note.md".to_string(), 3),
+                ("booklet.json".to_string(), 1),
+            ]),
+            flagged: vec!["Book/Note.md".to_string()],
         };
         state.save(&vault).unwrap();
 

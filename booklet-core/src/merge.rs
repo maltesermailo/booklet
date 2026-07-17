@@ -12,7 +12,8 @@
 //! - [`conflict_copy_name`] — the fallback name when there is no ancestor to
 //!   merge from.
 
-use diff_match_patch_rs::{Compat, DiffMatchPatch, PatchInput};
+use diff_match_patch_rs::{Compat, DiffMatchPatch, Ops, PatchInput};
+use serde::Serialize;
 
 /// The outcome of a three-way markdown merge.
 pub struct MarkdownMerge {
@@ -118,11 +119,185 @@ pub fn conflict_copy_name(stem: &str, date: &str, taken: &[String]) -> String {
     candidate
 }
 
+/// One in-place edit: at `pos`, drop `remove` units and splice in `insert`.
+///
+/// Positions and lengths are in **UTF-16 code units**, because that is how Qt's
+/// editor addresses text (`TextArea.insert`/`remove`) — a Rust `char` count would
+/// disagree on anything outside the Basic Multilingual Plane (an emoji is one
+/// `char` but two UTF-16 units). Edits are ordered by `pos`; the editor replays
+/// them back-to-front so earlier positions stay valid.
+#[derive(Serialize, PartialEq, Eq, Clone, Debug)]
+pub struct Edit {
+    pub pos: usize,
+    pub remove: usize,
+    pub insert: String,
+}
+
+/// The minimal edits that turn `old` into `new`, for applying a merged note onto
+/// the live editor without a full-document reassignment (which would drop the
+/// undo stack and the caret). Built from a `diff-match-patch` diff, with adjacent
+/// delete/insert runs coalesced into one replace.
+///
+/// A diff failure falls back to a single whole-document replacement, so this
+/// always produces edits that reproduce `new`.
+pub fn edit_script(old: &str, new: &str) -> Vec<Edit> {
+    let dmp = DiffMatchPatch::new();
+    let diffs = match dmp.diff_main::<Compat>(old, new) {
+        Ok(diffs) => diffs,
+        Err(_) => return vec![Edit { pos: 0, remove: utf16_len(old), insert: new.to_string() }],
+    };
+
+    let mut edits = Vec::new();
+    let mut pos = 0; // UTF-16 offset into `old`
+    let mut pending: Option<Edit> = None;
+
+    for diff in &diffs {
+        let text: String = diff.data().iter().collect();
+        let units = utf16_len(&text);
+
+        match diff.op() {
+            Ops::Equal => {
+                if let Some(edit) = pending.take() {
+                    edits.push(edit);
+                }
+                pos += units;
+            }
+            Ops::Delete => {
+                pending.get_or_insert(Edit { pos, remove: 0, insert: String::new() }).remove += units;
+                pos += units;
+            }
+            Ops::Insert => {
+                pending
+                    .get_or_insert(Edit { pos, remove: 0, insert: String::new() })
+                    .insert
+                    .push_str(&text);
+            }
+        }
+    }
+
+    if let Some(edit) = pending.take() {
+        edits.push(edit);
+    }
+
+    edits
+}
+
+/// A run of text in a diff, for a colored side-by-side view.
+#[derive(Serialize, PartialEq, Eq, Clone, Debug)]
+pub struct Segment {
+    /// `"equal"`, `"insert"` (added in `new`), or `"delete"` (only in `old`).
+    pub op: &'static str,
+    pub text: String,
+}
+
+/// A `diff-match-patch` diff of `old` → `new` as labelled runs, for the version
+/// history's colored diff. A diff failure degrades to a single equal run of
+/// `new`, so the view always renders something.
+pub fn diff_segments(old: &str, new: &str) -> Vec<Segment> {
+    let dmp = DiffMatchPatch::new();
+    let diffs = match dmp.diff_main::<Compat>(old, new) {
+        Ok(diffs) => diffs,
+        Err(_) => return vec![Segment { op: "equal", text: new.to_string() }],
+    };
+
+    diffs
+        .iter()
+        .map(|diff| {
+            let op = match diff.op() {
+                Ops::Equal => "equal",
+                Ops::Insert => "insert",
+                Ops::Delete => "delete",
+            };
+            Segment { op, text: diff.data().iter().collect() }
+        })
+        .collect()
+}
+
+/// Where a caret at UTF-16 offset `caret` (in the old text) lands after `edits`
+/// are applied — so the caret follows its surroundings rather than jumping to 0.
+/// An edit that straddles the caret drops it at the end of the inserted text.
+pub fn map_caret(edits: &[Edit], caret: usize) -> usize {
+    let mut delta: isize = 0;
+
+    for edit in edits {
+        if edit.pos + edit.remove <= caret {
+            delta += utf16_len(&edit.insert) as isize - edit.remove as isize;
+        } else if edit.pos <= caret {
+            return edit.pos + utf16_len(&edit.insert);
+        } else {
+            break; // edits are ordered; the rest are past the caret
+        }
+    }
+
+    (caret as isize + delta).max(0) as usize
+}
+
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const BASE: &str = "# Title\n\nAlpha paragraph.\n\nBeta paragraph.\n";
+
+    /// Applies UTF-16-addressed edits the way the QML editor does: back-to-front.
+    fn apply(old: &str, edits: &[Edit]) -> String {
+        let mut units: Vec<u16> = old.encode_utf16().collect();
+        for edit in edits.iter().rev() {
+            let insert: Vec<u16> = edit.insert.encode_utf16().collect();
+            units.splice(edit.pos..edit.pos + edit.remove, insert);
+        }
+        String::from_utf16(&units).unwrap()
+    }
+
+    #[test]
+    fn an_edit_script_reproduces_the_new_text() {
+        let cases = [
+            ("hello world", "hello brave world"),        // insertion
+            ("the quick brown fox", "the brown fox"),    // deletion
+            ("Alpha paragraph.", "Alpha, rewritten."),   // replacement
+            ("Grüße", "Grüße!"),                         // multi-byte (BMP)
+            ("a 🚀 b", "a 🚀🚀 b"),                        // astral (2 UTF-16 units)
+            ("same", "same"),                            // no change
+            ("", "fresh content"),                       // from empty
+        ];
+
+        for (old, new) in cases {
+            let edits = edit_script(old, new);
+            assert_eq!(apply(old, &edits), new, "edit script for {old:?} -> {new:?}");
+        }
+    }
+
+    #[test]
+    fn diff_segments_label_inserts_and_deletes() {
+        let segments = diff_segments("the quick fox", "the slow fox");
+
+        // Reassembling `new` from equal+insert runs reproduces it.
+        let rebuilt: String = segments
+            .iter()
+            .filter(|s| s.op != "delete")
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(rebuilt, "the slow fox");
+        assert!(segments.iter().any(|s| s.op == "insert"));
+        assert!(segments.iter().any(|s| s.op == "delete"));
+    }
+
+    #[test]
+    fn a_caret_follows_its_surroundings_through_edits() {
+        // "hello world" -> "hello brave world": inserts "brave " (6 units) at 6.
+        let edits = edit_script("hello world", "hello brave world");
+
+        assert_eq!(map_caret(&edits, 3), 3); // before the insertion: unchanged
+        assert_eq!(map_caret(&edits, 9), 15); // after it: shifted by +6
+
+        // A caret inside a replaced region lands at the end of the new text.
+        let replaced = edit_script("Alpha paragraph.", "Alpha, rewritten.");
+        let caret = map_caret(&replaced, 10);
+        assert!(caret <= utf16_len("Alpha, rewritten."));
+    }
 
     #[test]
     fn a_note_unchanged_on_both_sides_merges_to_itself() {

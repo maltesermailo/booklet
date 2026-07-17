@@ -26,6 +26,11 @@ Rectangle {
     property string section: ""
     property real modified: -1
 
+    // The open note was auto-merged and awaits review; drives the banner.
+    property bool flagged: false
+    // Asks Main to open the version-history modal for the open note.
+    signal requestHistory(string path)
+
     // Reading size, persisted. Headings keep the reference's ratio to it
     // (24 against a 15px body).
     property int fontSize: 18
@@ -58,6 +63,58 @@ Rectangle {
 
     function reloadFontSize() {
         view.fontSize = Library.editor_font_size()
+    }
+
+    function refreshFlag() {
+        view.flagged = view.hasNote && Sync.is_flagged(NoteEditor.current_id())
+    }
+
+    // Sync merged the open note's file on disk; land the merge in the live editor
+    // as minimal range edits so the undo stack and caret survive (no full
+    // reassignment). The edits and the caret map use UTF-16 units, matching Qt.
+    function applyMerge() {
+        var hunks = JSON.parse(NoteEditor.reload_edits(editor.text))
+        if (hunks.length > 0) {
+            var caret = editor.cursorPosition
+
+            view.loading = true
+            for (var i = hunks.length - 1; i >= 0; i--) { // back-to-front keeps offsets valid
+                var h = hunks[i]
+                if (h.remove > 0)
+                    editor.remove(h.pos, h.pos + h.remove)
+                if (h.insert.length > 0)
+                    editor.insert(h.pos, h.insert)
+            }
+            editor.cursorPosition = view.mapCaret(hunks, caret)
+            view.loading = false
+        }
+        view.refreshFlag()
+    }
+
+    // Where a caret lands after the hunks apply — mirrors booklet_core::merge::map_caret.
+    function mapCaret(hunks, caret) {
+        var delta = 0
+        for (var i = 0; i < hunks.length; i++) {
+            var h = hunks[i]
+            if (h.pos + h.remove <= caret)
+                delta += h.insert.length - h.remove
+            else if (h.pos <= caret)
+                return h.pos + h.insert.length
+            else
+                break
+        }
+        return Math.max(0, caret + delta)
+    }
+
+    Connections {
+        target: Sync
+        // The open note's file changed under us (a remote merge).
+        function onNote_changed(id) {
+            if (id === NoteEditor.current_id())
+                view.applyMerge()
+        }
+        // A flag may have been raised or dismissed elsewhere.
+        function onStatus_changed(payload) { view.refreshFlag() }
     }
 
     Component.onCompleted: {
@@ -134,6 +191,7 @@ Rectangle {
             var meta = JSON.parse(NoteEditor.meta())
             view.section = meta.section !== undefined ? meta.section : ""
             view.modified = meta.modified !== undefined ? meta.modified : -1
+            view.refreshFlag()
         }
         // Writing the note moves its timestamp.
         function onSave_state_changed(unsaved) {
@@ -218,6 +276,71 @@ Rectangle {
                     font.letterSpacing: 1.5 * Theme.uiScale
                 }
 
+                // The flagged-merge banner: an auto-merge landed here and wants a
+                // look. Styled like Notice — an ember bar on the left — sitting
+                // just below the meta line, shifting the editor down.
+                Rectangle {
+                    id: flagBanner
+                    x: 34
+                    y: meta.visible ? meta.y + meta.height + 8 : 22
+                    width: page.width - 60
+                    height: view.flagged ? Theme.row(30) : 0
+                    visible: view.flagged
+                    clip: true
+                    color: Theme.editBg
+                    radius: Theme.radiusSmall
+                    border.color: Theme.pageLine
+                    border.width: 1
+
+                    Rectangle {
+                        width: 3
+                        height: parent.height
+                        color: Theme.ember
+                    }
+
+                    Text {
+                        anchors.verticalCenter: parent.verticalCenter
+                        x: 14
+                        text: "Merged automatically — review it."
+                        color: Theme.text
+                        font.family: Theme.ui
+                        font.pixelSize: Theme.px(12)
+                    }
+
+                    Row {
+                        anchors.right: parent.right
+                        anchors.rightMargin: 8
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 8
+
+                        TextButton {
+                            label: "View history"
+                            onClicked: view.requestHistory(NoteEditor.current_id())
+                        }
+
+                        // × = "I checked it" — clears the flag.
+                        Rectangle {
+                            width: 22
+                            height: 22
+                            anchors.verticalCenter: parent.verticalCenter
+                            radius: 4
+                            color: dismissHover.hovered ? Theme.activePill : "transparent"
+                            HoverHandler { id: dismissHover }
+                            Text {
+                                anchors.centerIn: parent
+                                text: "×"
+                                color: dismissHover.hovered ? Theme.textBright : Theme.textDim
+                                font.pixelSize: Theme.px(15)
+                            }
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: Sync.dismiss_flag(NoteEditor.current_id())
+                            }
+                        }
+                    }
+                }
+
                 // Preview | Source. Source turns the highlighter off, leaving the
                 // markdown exactly as written.
                 Row {
@@ -264,7 +387,8 @@ Rectangle {
                 TextArea {
                     id: editor
                     x: 34
-                    y: meta.visible ? meta.y + meta.height + 8 : 22
+                    y: flagBanner.visible ? flagBanner.y + flagBanner.height + 8
+                                          : (meta.visible ? meta.y + meta.height + 8 : 22)
                     width: page.width - 60 // 34 left, 26 right
                     // Fill the sheet even when the note is short, so clicking
                     // the blank paper below the text lands in the editor and

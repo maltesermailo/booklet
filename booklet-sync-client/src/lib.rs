@@ -8,6 +8,8 @@
 
 pub mod client;
 pub mod engine;
+pub mod secret;
 
 pub use client::{Client, ClientError, PutResult};
 pub use engine::{pull, push, ClientState, PushOutcome};
+pub use secret::Credentials;

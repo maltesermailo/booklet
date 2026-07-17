@@ -29,6 +29,12 @@ Rectangle {
     signal goBack()
     signal goForward()
 
+    // Live sync status, driven by the Sync engine.
+    property string syncState: "offline"
+    property int syncFlagged: 0
+    signal signInRequested()
+    signal openHistory()
+
     readonly property string backIcon: "M15 5l-7 7 7 7"
     readonly property string forwardIcon: "M9 5l7 7-7 7"
 
@@ -49,11 +55,28 @@ Rectangle {
         bar.activeName = active ? active.name : "No vault"
     }
 
-    Component.onCompleted: reload()
+    function refreshSync() {
+        var status = JSON.parse(Sync.status())
+        bar.syncState = status.state
+        bar.syncFlagged = status.flagged_count
+    }
+
+    Component.onCompleted: {
+        reload()
+        refreshSync()
+    }
 
     Connections {
         target: Library
         function onTree_changed() { bar.reload() }
+    }
+    Connections {
+        target: Sync
+        function onStatus_changed(payload) {
+            var status = JSON.parse(payload)
+            bar.syncState = status.state
+            bar.syncFlagged = status.flagged_count
+        }
     }
     Connections {
         target: NoteEditor
@@ -233,31 +256,110 @@ Rectangle {
             }
         }
 
-        // Sync pill. Inert until the sync engine (M2) reports status: accent dot
-        // = synced, dim = offline, pulsing = syncing.
-        Row {
+        // Sync pill — live status: brass dot = synced, pulsing = syncing, dim =
+        // offline, ember = error. A flagged-merge count rides alongside. Click for
+        // the sync menu. An Item so the layout Row and the click area can coexist.
+        Item {
+            id: syncPill
             anchors.verticalCenter: parent.verticalCenter
-            spacing: 5
+            implicitWidth: pillRow.implicitWidth
+            implicitHeight: pillRow.implicitHeight
+
+            readonly property color dotColor: bar.syncState === "synced" ? Theme.brass
+                                             : bar.syncState === "syncing" ? Theme.brass
+                                             : bar.syncState === "error" ? Theme.ember
+                                             : Theme.textDim
 
             HoverHandler { id: syncHover }
-
             ToolTip.visible: syncHover.hovered
-            ToolTip.text: "Sync status — no sync server is configured yet"
+            ToolTip.text: "Sync: " + bar.syncState + (bar.syncFlagged > 0 ? " · " + bar.syncFlagged + " to review" : "")
             ToolTip.delay: 400
 
-            Rectangle {
+            Row {
+                id: pillRow
                 anchors.verticalCenter: parent.verticalCenter
-                width: 7
-                height: 7
-                radius: 3.5
-                color: Theme.textDim
+                spacing: 6
+
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    width: 7
+                    height: 7
+                    radius: 3.5
+                    color: syncPill.dotColor
+
+                    // The syncing state breathes.
+                    SequentialAnimation on opacity {
+                        running: bar.syncState === "syncing"
+                        loops: Animation.Infinite
+                        NumberAnimation { to: 0.3; duration: 600; easing.type: Theme.easing }
+                        NumberAnimation { to: 1.0; duration: 600; easing.type: Theme.easing }
+                    }
+                }
+
+                Text {
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: bar.syncState
+                    color: Theme.textSoft
+                    font.family: Theme.ui
+                    font.pixelSize: Theme.px(12)
+                }
+
+                // Flagged-merge badge.
+                Rectangle {
+                    anchors.verticalCenter: parent.verticalCenter
+                    visible: bar.syncFlagged > 0
+                    width: flagLabel.implicitWidth + 12
+                    height: 16
+                    radius: 8
+                    color: Theme.ember
+                    Text {
+                        id: flagLabel
+                        anchors.centerIn: parent
+                        text: "⚑ " + bar.syncFlagged
+                        color: Theme.page
+                        font.family: Theme.ui
+                        font.pixelSize: Theme.px(10)
+                    }
+                }
             }
-            Text {
-                text: "offline"
-                color: Theme.textSoft
-                font.family: Theme.ui
-                font.pixelSize: Theme.px(12)
+
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: Qt.PointingHandCursor
+                onClicked: syncMenu.popup()
             }
+        }
+    }
+
+    AppMenu {
+        id: syncMenu
+
+        AppMenuItem {
+            text: "Sync now"
+            onTriggered: Sync.sync_now()
+        }
+        AppMenuItem {
+            text: "Version history"
+            enabled: NoteEditor.current_id() !== ""
+            onTriggered: bar.openHistory()
+        }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: Theme.pageLine }
+        }
+        AppMenuItem {
+            text: "Publish this vault"
+            onTriggered: Sync.publish(bar.activeName)
+        }
+        MenuSeparator {
+            contentItem: Rectangle { implicitHeight: 1; color: Theme.pageLine }
+        }
+        AppMenuItem {
+            text: "Sign in…"
+            onTriggered: bar.signInRequested()
+        }
+        AppMenuItem {
+            text: "Sign out"
+            onTriggered: Sync.sign_out()
         }
     }
 

@@ -17,6 +17,7 @@ pub enum PutResult {
 }
 
 /// An authenticated connection to one server.
+#[derive(Clone)]
 pub struct Client {
     agent: ureq::Agent,
     base: String,
@@ -24,15 +25,39 @@ pub struct Client {
 }
 
 impl Client {
+    /// Builds a client around a token already held (from a prior sign-in saved to
+    /// disk), doing no network. Status-as-error is off so a 409 comes back as a
+    /// readable response rather than an error without its body.
+    pub fn with_token(base: &str, token: &str) -> Client {
+        let agent: ureq::Agent =
+            ureq::Agent::config_builder().http_status_as_error(false).build().into();
+
+        Client { agent, base: base.to_string(), token: token.to_string() }
+    }
+
     /// Signs in and holds the issued token for subsequent calls.
     pub fn login(base: &str, request: &proto::TokenRequest) -> Result<Client, ClientError> {
-        let agent: ureq::Agent = ureq::Agent::config_builder().http_status_as_error(false).build().into();
+        let client = Client::with_token(base, "");
 
-        let mut response = agent.post(format!("{base}/auth/token")).send_json(request)?;
+        let mut response = client.agent.post(format!("{base}/auth/token")).send_json(request)?;
         expect(&response, 200)?;
         let issued: proto::TokenResponse = response.body_mut().read_json()?;
 
-        Ok(Client { agent, base: base.to_string(), token: issued.token })
+        Ok(Client { token: issued.token, ..client })
+    }
+
+    /// The device token, so the caller can persist it after sign-in.
+    pub fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// The vaults this device's user owns, for the clone picker.
+    pub fn list_vaults(&self) -> Result<Vec<proto::VaultSummary>, ClientError> {
+        let mut response =
+            self.agent.get(self.url("/vaults")).header("authorization", self.bearer()).call()?;
+        expect(&response, 200)?;
+
+        Ok(response.body_mut().read_json()?)
     }
 
     pub fn publish(&self, name: &str) -> Result<String, ClientError> {

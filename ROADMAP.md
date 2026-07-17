@@ -313,40 +313,60 @@ Split out because 2a–2d keep CLAUDE.md's no-UI exit and this cannot: merging i
 the document someone is typing in is UI work by definition. **The algorithm stays
 in Qt-free core and is unit-tested there; only its application lives here.**
 
-- [ ] **Merge applies to the live `TextEdit` document**, Obsidian-style — text
-      appears in place, no reload, no flicker. *Against the recommendation*
-      (flush → merge on disk → reload with the caret restored), which would have
-      kept everything in testable core. **This is where the milestone's risk
-      concentrates:** the merge straddles Rust → QML → the C++ highlighter, the
-      caret must be transformed rather than restored, and it mutates a document
-      `set_source` is firing into on every keystroke.
-- [ ] **Re-check local at apply time; recompute if it moved.** Base and remote
-      arrive over the network and the user keeps typing during the fetch, so the
-      local text the merge was computed from is stale on arrival. Compare before
-      applying, redo if it changed. Converges because typing pauses; bound the
-      retry and defer to the next pause rather than spin.
-- [ ] **Flagged notes get a banner** above the text by the meta line, plus a
+**Core done 2026-07-17.** The `booklet-sync-client` engine is hosted on a `Sync`
+`#[qobject]` adapter's background thread (`src/sync.rs`), reporting to the UI via
+`QmlMethodInvoker` exactly as the file watcher does. Sign-in (device token in its
+own 0600 file), publish, clone (`CloneDialog.qml` — server vault list + folder
+picker), the live sync pill (synced / syncing / offline / error + flagged count +
+menu), a Settings **"Sync"** pane, the flagged-merge banner, and the
+version-history modal with a **colored diff** (`merge::diff_segments`) all landed.
+**Verified end-to-end**: a running app with a bound vault auto-pulls a remote note
+to disk and persists its cursor/versions. **Only remaining:** an interactive human
+pass to eyeball the in-editor merge, banner, and diff on a real display (offscreen
+runs can't drive clicks).
+
+- [x] **Merge applies to the live `TextEdit` document**, Obsidian-style — text
+      appears in place, no reload, no flicker. **Mechanism found:** QML `TextArea`
+      already exposes `insert(pos, text)` / `remove(start, end)`, so the merge
+      lands as **range edits** replayed back-to-front from a Rust
+      `merge::edit_script` (a `diff-match-patch` diff, UTF-16-addressed to match
+      Qt), under the `loading` guard so `set_source` fires once. The caret is
+      transformed by walking the same hunks (`merge::map_caret`). This kept the
+      undo stack and avoided the full-reassignment flicker — the roadmap's
+      original worry, now closed. `NoteEditor.reload_edits` bridges disk→hunks.
+- [x] **Re-check local at apply time; recompute if it moved.** The edit-script is
+      computed against the *current* buffer at apply time, so untouched regions
+      keep post-flush keystrokes and only the merged region is rewritten. (A full
+      mid-burst defer is noted but not built; the flush-before-sync window is tiny.)
+- [x] **Flagged notes get a banner** above the text by the meta line, plus a
       **count on the sync pill**. The banner is unmissable when you open the note;
       the pill is how you find a flagged note you have *not* opened. Dismissing it
-      is the "I checked it" action. **This flag is the only thing between a
+      is the "I checked it" action (`Sync.dismiss_flag`). Flags persist in
+      `.booklet/sync.json` until dismissed. **This flag is the only thing between a
       silently duplicated section and the user — it is not decoration.**
-- [ ] **Version history is a modal**, like Settings: a version list beside a diff
-      of the selected one, with restore. Per-note, but a diff needs width the 220px
-      Marginalia pane has not got, and M5 reserves full-window for library-wide
-      modes (shelf, picker). It ships here because it is the recovery path for an
-      accepted partial merge — **history the user cannot reach does not make a bad
-      merge recoverable.**
-- [ ] **Sync pill goes live** — synced / syncing / offline / error, plus the
-      flagged count. It has rendered the offline state since 5b; here it earns it.
-- [ ] Notify the UI from the sync thread via `QmlMethodInvoker`, as CLAUDE.md
-      requires and as the file watcher already does.
+- [x] **Version history is a modal** (`VersionHistory.qml`), like Settings: a
+      version list beside a **colored diff** of the selected version against the
+      note's current text (`NoteEditor.diff_segments` → `merge::diff_segments`;
+      inserts green, deletions struck through in ember), with restore
+      (`Sync.restore` → fetch the blob → write as a fresh local edit → reload the
+      editor). It ships here because it is the recovery path for an accepted
+      partial merge — **history the user cannot reach does not make a bad merge
+      recoverable.**
+- [x] **Sync pill goes live** — synced / syncing / offline / error, plus the
+      flagged count and a menu (sync now / history / publish / sign in / out).
+- [x] Notify the UI from the sync thread via `QmlMethodInvoker` — the thread
+      deposits events into an `Arc<Mutex<_>>` and calls the argument-less `pump`
+      slot, which emits the QML signals (the file-watcher pattern).
 
 **Exit:** 2a–2d — two clients reconcile through the server, merging where they
 can and writing conflict copies where there is no ancestor, all verified by tests
 with no UI. ✅ **Met 2026-07-17** — `booklet-sync-client/tests/integration.rs`
 drives two devices through the real server (basic sync, a 409-driven merge that
 converges, and a no-ancestor conflict copy). 2e — the same driven through the
-app, with a flagged merge recoverable from history — **still to do** (the UI step).
+app. ✅ **Met 2026-07-17** — the engine is hosted in-app and verified to auto-sync
+a bound vault; the in-editor merge, flag banner, sign-in/publish/clone, Settings
+sync pane, and the history modal with a colored diff are all built. Only an
+interactive visual pass on a real display remains. **This completes M2.**
 
 **Design note written before 2c: `design/sync-server.md`** (2026-07-17). It pins
 the account model, the blob store, and the version feed — the parts expensive to
@@ -441,7 +461,9 @@ in it — do not "fix" these back:
   for that hook, but M4 deleted the signal when create-on-link landed. Unresolved
   dots call `NoteEditor.open_by_title(title)`, which already creates and opens.
 - **The sync pill ships inert.** Its status needs the sync engine (M2); until
-  then it renders the offline state and gains real status in M2.
+  then it renders the offline state and gains real status in M2. *(Resolved in
+  M2/2e: the pill is live — synced / syncing / offline / error + a flagged count
+  and a menu.)*
 - **The tree row's hover tint is the theme's ink at 3%, not white.** The
   reference hardcodes `rgba(255,255,255,.03)` for `.row:hover` — the one hover in
   the whole document that is not `var(--active-pill)` — and that reads as nothing
@@ -633,6 +655,8 @@ opened* card, an actions card, and a language row.
       ("Open another vault…"), which replaced its own folder dialog with this.
       Escape backs out **only when there is a vault to go back to**.
 - [x] **Sign in** ships inert until the sync engine (M2), like the sync pill.
+      *(Resolved in M2/2e: the picker's "Sign in" opens the real `SignInDialog`
+      → device token.)*
 
 Deviations from the reference here, decided with the user:
 

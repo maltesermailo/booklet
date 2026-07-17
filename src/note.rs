@@ -164,6 +164,17 @@ impl NoteEditor {
         serde_json::to_string(&found.unwrap_or_default()).expect("tags serialize to JSON")
     }
 
+    /// A diff of `other` (an older version) against the open note's current text,
+    /// as labelled runs `[{op, text}]` (`equal`/`insert`/`delete`) — for the
+    /// version history's colored diff.
+    #[qslot]
+    fn diff_segments(&self, other: String) -> String {
+        let current = self.document.as_ref().map(|document| document.source()).unwrap_or("");
+        let segments = booklet_core::diff_segments(&other, current);
+
+        serde_json::to_string(&segments).expect("diff segments serialize to JSON")
+    }
+
     /// The open note's markdown. The editor is one surface over the whole note,
     /// so this is what it shows.
     #[qslot]
@@ -214,6 +225,33 @@ impl NoteEditor {
     #[qslot]
     fn is_unsaved(&self) -> bool {
         self.unsaved
+    }
+
+    /// Sync merged this note's file on disk while it was open. Re-reads the merged
+    /// text, adopts it as the in-memory source (now synced, so not unsaved), and
+    /// returns the minimal edits — `[{pos, remove, insert}]` in UTF-16 units — that
+    /// turn `current` (the live editor buffer) into it. The editor replays them in
+    /// place, keeping the undo stack and the caret rather than reassigning the
+    /// whole document.
+    #[qslot]
+    fn reload_edits(&mut self, current: String) -> String {
+        let disk = match self.document.as_ref().map(|document| std::fs::read_to_string(document.path())) {
+            Some(Ok(text)) => text,
+            Some(Err(error)) => {
+                self.failed(format!("Could not reload note: {error}"));
+                return "[]".into();
+            }
+            None => return "[]".into(),
+        };
+
+        let edits = booklet_core::edit_script(&current, &disk);
+
+        if let Some(document) = &mut self.document {
+            document.set_source(&disk);
+        }
+        self.set_unsaved(false);
+
+        serde_json::to_string(&edits).expect("edits serialize to JSON")
     }
 
     /// Emitted only when the state flips, not on every keystroke. `false` also

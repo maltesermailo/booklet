@@ -60,7 +60,13 @@ ApplicationWindow {
             root.goTo(root.historyAt + 1)
     }
 
+    // The vault sync is scoped to, tracked so a switch retargets the engine.
+    property string activeVault: ""
+
     Component.onCompleted: {
+        // Start the sync thread before anything can send it a command.
+        Sync.start()
+
         // Load the persisted vault list; a path argument seeds/adds one vault
         // (handy for the bundled sample: `cargo run -- "$(pwd)/vault"`).
         Library.load()
@@ -82,7 +88,46 @@ ApplicationWindow {
             root.noteTitle = title
             root.recordVisit(id)
         }
+        // Just written to disk; push it soon (debounced).
+        function onSave_state_changed(unsaved) {
+            if (!unsaved)
+                syncAfterSave.restart()
+        }
     }
+
+    // Retarget the sync engine when the active vault actually changes (not on
+    // every tree write, which `tree_changed` also fires for).
+    Connections {
+        target: Library
+        function onTree_changed() {
+            var vault = Library.active_vault()
+            if (vault !== root.activeVault) {
+                root.activeVault = vault
+                Sync.set_active_vault(vault)
+            }
+        }
+    }
+
+    // Sync on a slow cadence: flush the open note first so its edits are on disk
+    // and go through the normal push-409-merge path, then run a cycle.
+    Timer {
+        id: syncTimer
+        interval: 30000
+        repeat: true
+        running: root.activeVault !== ""
+        onTriggered: {
+            NoteEditor.flush()
+            Sync.sync_now()
+        }
+    }
+    Timer {
+        id: syncAfterSave
+        interval: 4000
+        onTriggered: Sync.sync_now()
+    }
+
+    SignInDialog { id: signInDialog }
+    VersionHistory { id: versionHistory }
 
     // StandardKey rather than a written-out "Ctrl++": where the punctuation sits
     // differs per layout, and Qt knows where. The engine clamps the result.
@@ -193,6 +238,8 @@ ApplicationWindow {
             onOpenSettings: settingsView.open()
             onOpenPicker: root.pickerOpen = true
             onOpenShelf: root.shelfOpen = true
+            onSignInRequested: signInDialog.open()
+            onOpenHistory: if (NoteEditor.current_id() !== "") versionHistory.openFor(NoteEditor.current_id())
         }
 
         SplitView {
@@ -240,8 +287,10 @@ ApplicationWindow {
                     onNewTabRequested: root.newTab()
                 }
                 EditorView {
+                    id: editorView
                     Layout.fillWidth: true
                     Layout.fillHeight: true
+                    onRequestHistory: (path) => versionHistory.openFor(path)
                 }
             }
 
@@ -302,11 +351,18 @@ ApplicationWindow {
         }
     }
 
-    SettingsView { id: settingsView }
+    SettingsView {
+        id: settingsView
+        onSignInRequested: signInDialog.open()
+        onCloneRequested: cloneDialog.openClone()
+    }
+
+    CloneDialog { id: cloneDialog }
 
     VaultPicker {
         anchors.fill: parent
         visible: root.pickerOpen
         onDismissed: root.pickerOpen = false
+        onSignInRequested: signInDialog.open()
     }
 }

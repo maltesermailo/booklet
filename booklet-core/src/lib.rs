@@ -19,7 +19,10 @@ pub mod vault;
 pub use document::{Block, Document};
 pub use engine::Engine;
 pub use links::{Backlink, OutgoingLink};
-pub use merge::{conflict_copy_name, merge_booklet_json, merge_markdown, MarkdownMerge};
+pub use merge::{
+    conflict_copy_name, diff_segments, edit_script, map_caret, merge_booklet_json, merge_markdown,
+    Edit, MarkdownMerge, Segment,
+};
 pub use search::Hit;
 pub use sync::{Change, EntryKind, Manifest, SyncState};
 pub use vault::{Book, BookInfo, Folder, Node, Note, NoteInfo, Row, Section, Vault};

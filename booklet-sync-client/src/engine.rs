@@ -15,10 +15,11 @@
 
 use crate::client::{Client, ClientError, PutResult};
 use booklet_core::merge;
-use booklet_core::sync::{Change, EntryKind, Manifest};
+use booklet_core::sync::{Change, EntryKind, Manifest, SyncState};
 use booklet_sync_proto as proto;
 use std::collections::HashMap;
 use std::fs;
+use std::io;
 use std::path::Path;
 
 /// One device's sync state against one vault.
@@ -31,6 +32,24 @@ pub struct ClientState {
     pub versions: HashMap<String, u64>,
 }
 
+impl ClientState {
+    /// Loads the cursor and per-path versions from `.booklet/sync.json`. A vault
+    /// not yet synced reads as the default (cursor 0, no versions).
+    pub fn load(vault_root: &Path) -> io::Result<ClientState> {
+        let state = SyncState::load(vault_root)?;
+        Ok(ClientState { cursor: state.cursor, versions: state.versions })
+    }
+
+    /// Persists the cursor and versions, preserving the vault's server binding
+    /// (`vault_id` / `server_url`) that lives in the same file.
+    pub fn save(&self, vault_root: &Path) -> io::Result<()> {
+        let mut state = SyncState::load(vault_root)?;
+        state.cursor = self.cursor;
+        state.versions = self.versions.clone();
+        state.save(vault_root)
+    }
+}
+
 /// What a push had to reconcile, for the UI (2e) to surface.
 #[derive(Default)]
 pub struct PushOutcome {
@@ -38,6 +57,9 @@ pub struct PushOutcome {
     pub flagged: Vec<String>,
     /// Paths written as conflict copies (no common ancestor).
     pub conflict_copies: Vec<String>,
+    /// Every local path the reconcile rewrote on disk — so the editor can reload
+    /// the open note if it is among them.
+    pub changed: Vec<String>,
 }
 
 /// Pushes every local change since `manifest`, reconciling any 409, then updates
@@ -75,7 +97,8 @@ pub fn push(
     Ok(outcome)
 }
 
-/// Applies every remote change since `state.cursor` to local files, then updates
+/// Applies every remote change since `state.cursor` to local files, returning the
+/// paths it touched (so the editor can reload the open note), then updates
 /// `manifest`. Deletes remove the local file (a production client trashes it).
 pub fn pull(
     client: &Client,
@@ -83,8 +106,9 @@ pub fn pull(
     root: &Path,
     manifest: &mut Manifest,
     state: &mut ClientState,
-) -> Result<(), ClientError> {
+) -> Result<Vec<String>, ClientError> {
     let changes = client.changes(vault, state.cursor)?;
+    let mut touched = Vec::new();
 
     for change in &changes.changes {
         let local = root.join(&change.path);
@@ -101,12 +125,13 @@ pub fn pull(
             fs::write(&local, content)?;
         }
 
+        touched.push(change.path.clone());
         state.versions.insert(change.path.clone(), change.version);
     }
 
     state.cursor = changes.cursor;
     *manifest = Manifest::scan(root, manifest);
-    Ok(())
+    Ok(touched)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -181,6 +206,7 @@ fn reconcile(
     };
 
     fs::write(root.join(path), &merged)?;
+    outcome.changed.push(path.to_string());
 
     // Re-push the merged result against the version we just lost to.
     let hash = client.put_blob(&merged)?;
@@ -217,6 +243,8 @@ fn conflict_copy(
     // Our losing text becomes the copy; the server's version keeps the name.
     fs::write(root.join(&copy_path), local)?;
     fs::write(root.join(path), remote)?;
+    outcome.changed.push(path.to_string());
+    outcome.changed.push(copy_path.clone());
     state.versions.insert(path.to_string(), current_version);
 
     // The copy has a fresh, unique name, so it applies without a conflict.

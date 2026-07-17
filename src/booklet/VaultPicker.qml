@@ -19,6 +19,8 @@ Rectangle {
 
     // Closing is only possible once there is somewhere to close *to*.
     signal dismissed()
+    // Opens the sign-in dialog (owned by Main).
+    signal signInRequested()
 
     property var recents: []
 
@@ -363,12 +365,9 @@ Rectangle {
                         ActionRow {
                             width: parent.width
                             title: "Connect to a sync server"
-                            blurb: "Make a synced vault from an existing remote one."
+                            blurb: "Sign in to publish this vault or clone one from the server."
                             action: "Sign in"
-                            // Inert until the sync engine exists (M2), like the
-                            // sync pill in the topbar.
-                            enabled: false
-                            onTriggered: {}
+                            onTriggered: picker.signInRequested()
                         }
                     }
                 }
