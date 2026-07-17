@@ -761,41 +761,41 @@ panel small.
 
 ### 7a — Admin identity (server work, before any HTML)
 
-- [ ] **An admin session is not a device token.** A device token is bearer
+- [x] **An admin session is not a device token.** A device token is bearer
       credential shipped to a laptop to sync a vault; it must not open `/admin`,
       and an admin cookie must not sync files. Different audience, different
       lifetime, checked separately — one shared "is authenticated" helper across
       both is exactly the bug to avoid.
-- [ ] **Sessions:** signed `HttpOnly` + `Secure` + `SameSite=Strict` cookie,
+- [x] **Sessions:** signed `HttpOnly` + `Secure` + `SameSite=Strict` cookie,
       short expiry, server-side store so revocation is real. Argon2id for
       password hashes. Rate-limit sign-in — the panel is the one surface a
       stranger can reach with a guess.
-- [ ] **Bootstrap the first admin from the shell**, not the web:
+- [x] **Bootstrap the first admin from the shell**, not the web:
       `booklet-sync-server admin grant <handle>`. Nobody can sign in to make the
       first admin, and a self-registering "first visitor becomes root" page is a
       race with whoever finds the port first. Shell access to the box is the root
       of trust.
-- [ ] **One flag, not roles.** `is_admin` on the user. Roles are a table, a
+- [x] **One flag, not roles.** `is_admin` on the user. Roles are a table, a
       policy check on every route and a UI to edit them; there are two kinds of
       person here (an operator and everybody else) and Rule of Three has not been
       met.
 
 ### 7b — Rendering and assets
 
-- [ ] **Server-rendered HTML, no SPA, no npm, no build step.** Forms that POST
+- [x] **Server-rendered HTML, no SPA, no npm, no build step.** Forms that POST
       and redirect. The panel is a handful of tables and about six buttons; a
       frontend toolchain would be larger than the thing it builds, and it would
       be the only JS build in a repo that is Rust, QML and one C++ file.
-- [ ] **Templates and CSS `include_str!`'d into the binary**, so deploying stays
+- [x] **Templates and CSS `include_str!`'d into the binary**, so deploying stays
       "copy one file to the box". Templating crate (`maud` / `askama`) is a
       dependency choice worth one sentence at implementation time — `format!`
       over a `String` is a real option at this size and does not need HTML
       escaping bolted on later, which is the argument against it.
-- [ ] **Reuse `design/reference.html`'s `:root` block verbatim.** Its custom
+- [x] **Reuse `design/reference.html`'s `:root` block verbatim.** Its custom
       properties are already the design language and already map 1:1 to
       `Theme.qml`. Lifting the token block gives the panel Booklet's face for
       free and avoids a second vocabulary drifting from the first.
-- [ ] **Serve the bundled OFL fonts from the binary; no external requests.**
+- [x] **Serve the bundled OFL fonts from the binary; no external requests.**
       `reference.html` pulls Google Fonts over the network — fine for a design
       doc opened on a dev machine, wrong for an admin page on a self-hosted box
       that may have no route to the internet and whose operator did not ask to
@@ -804,47 +804,49 @@ panel small.
 
 ### 7c — The pages
 
-- [ ] **Overview** — server version and uptime, storage used and free, counts of
-      users / devices / vaults, recent **flagged merges** and recent conflict
-      copies. Flagged merges belong on the front page: 2b accepts a partial merge
-      and marks the note, so this is the operator's view of how often the merge
-      is guessing. Conflict copies are rarer now (no-ancestor only) but are still
-      the loudest thing sync does to a vault.
-- [ ] **Blob store health** — total blobs, bytes, and growth. History is kept
+- [x] **Overview** — server version and uptime, storage used and free, counts of
+      users / devices / vaults, and recent conflict copies. Conflict copies are
+      rarer now (no-ancestor only) but are still the loudest thing sync does to a
+      vault. **Flagged merges are NOT shown (deferred):** 2b's flag (`clean ==
+      false`) is purely client-side state in `.booklet/sync.json`; the server sees
+      only a normal re-PUT, so surfacing it would need a protocol + client change
+      — out of scope for a server-only milestone. Conflict copies are detected by
+      their `(conflict …)` filename, which the server *can* see.
+- [x] **Blob store health** — total blobs, bytes, and growth. History is kept
       forever (2c) bounded only by the client's push debounce, so this number is
       the one that tells you the bound stopped holding.
-- [ ] **Users** — list (handle, created, last seen, vaults, bytes) and a detail
+- [x] **Users** — list (handle, created, last seen, vaults, bytes) and a detail
       page carrying that user's devices and vaults.
-- [ ] **Devices** — name, platform, issued, last seen, per user.
-- [ ] **Vaults** — owner, note count, bytes, last sync. Names and sizes; not
+- [x] **Devices** — name, platform, issued, last seen, per user.
+- [x] **Vaults** — owner, note count, bytes, last sync. Names and sizes; not
       contents.
-- [ ] **Log** — recent sign-ins, token issues and revocations, user and vault
+- [x] **Log** — recent sign-ins, token issues and revocations, user and vault
       deletions, conflicts. Append-only, capped, plain rows.
 
 ### 7d — Actions
 
 Every mutation is a POST behind a CSRF token, and every one lands in the log.
 
-- [ ] Create a user; disable a user (keeps the files, kills the tokens); delete a
+- [x] Create a user; disable a user (keeps the files, kills the tokens); delete a
       user.
-- [ ] Revoke a device token — the reason the panel exists at all, for a laptop
+- [x] Revoke a device token — the reason the panel exists at all, for a laptop
       that walked off.
-- [ ] **Deleting a user touches the disk and is the one irreversible thing here.**
+- [x] **Deleting a user touches the disk and is the one irreversible thing here.**
       It gets a typed-confirmation, and it says what it is about to remove and how
       many bytes, before it does.
 
 ### 7e — Hardening
 
-- [ ] **CSRF token on every mutating form.** A cookie-authenticated HTML form
+- [x] **CSRF token on every mutating form.** A cookie-authenticated HTML form
       surface is the textbook case, and this is the whole reason the panel is
       riskier than the sync API (which is bearer-token and immune by
       construction).
-- [ ] **`/admin` binds to `127.0.0.1` by default**, reached over an SSH tunnel;
+- [x] **`/admin` binds to `127.0.0.1` by default**, reached over an SSH tunnel;
       exposing it publicly is an explicit config change with a comment saying
       what it costs. Sync itself needs the world; administration does not.
-- [ ] Device token rejected on `/admin`, admin cookie rejected on sync routes —
+- [x] Device token rejected on `/admin`, admin cookie rejected on sync routes —
       as a test, not as a review comment.
-- [ ] Integration-test the auth boundary the way 2d tests the sync one: no UI,
+- [x] Integration-test the auth boundary the way 2d tests the sync one: no UI,
       just requests that should be refused.
 
 Explicitly **not** in this milestone — each is a real feature someone could want,
@@ -861,3 +863,10 @@ and none is needed to answer the four questions:
   Prometheus rather than drawing charts in Rust.
 - **A second theme.** The panel takes `night` and stops; the toggle is the app's
   business.
+
+> **Update (2026-07-18, on request):** four of these five were built afterwards —
+> **quotas + billing** (Stripe subscriptions drive per-user quota; a 507 enforces
+> it), **email/invites/self-registration** (optional SMTP; admin-set reset needs
+> no email), and **in-panel SVG charts + a light theme**. Each optional
+> integration degrades gracefully when unconfigured. **Reading/editing notes
+> through the panel stays unbuilt** — the security line held.

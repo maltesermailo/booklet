@@ -25,6 +25,8 @@ use std::path::PathBuf;
 pub struct Store {
     pool: PgPool,
     blobs: BlobStore,
+    /// The blob directory root, kept so the admin panel can report free space.
+    blob_root: PathBuf,
     /// Where `PUT /blobs` parks uploaded content until an entity finalizes it.
     staging: PathBuf,
 }
@@ -58,7 +60,7 @@ impl Store {
     fn over(pool: PgPool, blob_root: impl Into<PathBuf>, checkpoint_interval: u32) -> Self {
         let root = blob_root.into();
         let staging = root.join(".staging");
-        Self { pool, blobs: BlobStore::new(root, checkpoint_interval), staging }
+        Self { pool, blobs: BlobStore::new(root.clone(), checkpoint_interval), blob_root: root, staging }
     }
 
     // --- accounts and vaults ---
@@ -147,10 +149,20 @@ impl Store {
         Ok(id)
     }
 
-    /// The device and its owner for a live (non-revoked) token hash.
+    /// The device and its owner for a live (non-revoked) token hash. A hit also
+    /// stamps `last_seen_at` on both the device and its user, so the admin panel
+    /// shows real activity — one extra write per authenticated request, cheap at
+    /// personal scale.
     pub async fn device_for_token(&self, token_hash: &str) -> Result<Option<(i64, i64)>> {
         Ok(sqlx::query_as(
-            "SELECT id, user_id FROM devices WHERE token_hash = $1 AND revoked_at IS NULL",
+            "WITH d AS (
+                 UPDATE devices SET last_seen_at = now()
+                  WHERE token_hash = $1 AND revoked_at IS NULL
+              RETURNING id, user_id
+             ), u AS (
+                 UPDATE users SET last_seen_at = now() WHERE id = (SELECT user_id FROM d)
+             )
+             SELECT id, user_id FROM d",
         )
         .bind(token_hash)
         .fetch_optional(&self.pool)
@@ -289,6 +301,13 @@ impl Store {
                 current_version: current.version as u64,
                 current_blob: current.blob,
             }));
+        }
+
+        // A write that grows the owner's stored content past their quota is
+        // refused before anything is stored. Deletes/moves/folders carry no new
+        // content and so never hit this.
+        if let Some(bytes) = content {
+            self.enforce_quota(vault, path, bytes.len()).await?;
         }
 
         // Store the blob (encoded against the version being replaced) before the
@@ -441,6 +460,760 @@ impl Store {
 
         Ok(proto::History { versions })
     }
+}
+
+// --- admin panel (M7): reads the whole box, mutates accounts and tokens ---
+
+impl Store {
+    // --- admin identity and sessions ---
+
+    /// Grants admin to a user by handle, returning whether one was found.
+    pub async fn grant_admin(&self, handle: &str) -> Result<bool> {
+        let updated = sqlx::query("UPDATE users SET is_admin = TRUE WHERE handle = $1")
+            .bind(handle)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(updated.rows_affected() == 1)
+    }
+
+    /// Opens an admin session for a user, storing only the token's hash. The
+    /// session expires after `ttl_seconds` and carries its own CSRF token.
+    pub async fn create_admin_session(
+        &self,
+        user_id: i64,
+        token_hash: &str,
+        csrf: &str,
+        ttl_seconds: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO admin_sessions (user_id, token_hash, csrf, expires_at)
+             VALUES ($1, $2, $3, now() + ($4 * interval '1 second'))",
+        )
+        .bind(user_id)
+        .bind(token_hash)
+        .bind(csrf)
+        .bind(ttl_seconds)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    /// The live session for a token hash: present only if unexpired and its user
+    /// is still an admin and not disabled, so a revoked admin's cookie dies at
+    /// once. Returns the operator's handle and this session's CSRF token.
+    pub async fn admin_session(&self, token_hash: &str) -> Result<Option<AdminSession>> {
+        let row: Option<(i64, String, String)> = sqlx::query_as(
+            "SELECT s.user_id, u.handle, s.csrf
+               FROM admin_sessions s JOIN users u ON u.id = s.user_id
+              WHERE s.token_hash = $1 AND s.expires_at > now()
+                AND u.is_admin AND NOT u.disabled",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(user_id, handle, csrf)| AdminSession { user_id, handle, csrf }))
+    }
+
+    /// Ends a session (logout), or clears one already gone.
+    pub async fn delete_admin_session(&self, token_hash: &str) -> Result<()> {
+        sqlx::query("DELETE FROM admin_sessions WHERE token_hash = $1")
+            .bind(token_hash)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    /// A user's id, admin flag, and disabled flag by handle, for the sign-in gate.
+    pub async fn admin_login(&self, handle: &str) -> Result<Option<(i64, String, bool, bool)>> {
+        Ok(sqlx::query_as(
+            "SELECT id, password_hash, is_admin, disabled FROM users WHERE handle = $1",
+        )
+        .bind(handle)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // --- overview ---
+
+    /// The front-page tallies in one round of scalar queries.
+    pub async fn overview(&self) -> Result<Overview> {
+        let (users, admins): (i64, i64) =
+            sqlx::query_as("SELECT count(*), count(*) FILTER (WHERE is_admin) FROM users")
+                .fetch_one(&self.pool)
+                .await?;
+        let (devices, live_devices): (i64, i64) = sqlx::query_as(
+            "SELECT count(*), count(*) FILTER (WHERE revoked_at IS NULL) FROM devices",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+        let vaults: i64 = sqlx::query_scalar("SELECT count(*) FROM vaults").fetch_one(&self.pool).await?;
+        let (blobs, blob_size, blob_stored): (i64, i64, i64) = sqlx::query_as(
+            "SELECT count(*), coalesce(sum(size), 0)::bigint, coalesce(sum(stored_size), 0)::bigint FROM blobs",
+        )
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(Overview {
+            users,
+            admins,
+            devices,
+            live_devices,
+            vaults,
+            blobs,
+            blob_size,
+            blob_stored,
+            disk_free: disk_free_bytes(&self.blob_root),
+        })
+    }
+
+    /// Recent conflict copies — the one thing sync writes into a vault that the
+    /// server can see, spotted by the `(conflict …)` filename 2b writes.
+    pub async fn recent_conflict_copies(&self, limit: i64) -> Result<Vec<ConflictCopy>> {
+        let rows: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT v.name, e.path,
+                    to_char((
+                        SELECT max(created_at) FROM entity_versions ev
+                         WHERE ev.vault_id = e.vault_id AND ev.path = e.path
+                    ), 'YYYY-MM-DD HH24:MI')
+               FROM entities e JOIN vaults v ON v.id = e.vault_id
+              WHERE NOT e.deleted AND e.path LIKE '% (conflict %'
+              ORDER BY 3 DESC NULLS LAST
+              LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(vault, path, at)| ConflictCopy { vault, path, at }).collect())
+    }
+
+    // --- users ---
+
+    pub async fn list_users(&self) -> Result<Vec<UserRow>> {
+        let rows: Vec<UserRow> = sqlx::query_as(&format!("{USER_SELECT} GROUP BY u.id ORDER BY u.handle"))
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows)
+    }
+
+    pub async fn user_row(&self, id: i64) -> Result<Option<UserRow>> {
+        Ok(sqlx::query_as(&format!("{USER_SELECT} WHERE u.id = $1 GROUP BY u.id"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    /// What deleting a user would remove, for the typed-confirmation summary.
+    pub async fn delete_user_impact(&self, id: i64) -> Result<Option<DeleteImpact>> {
+        let row: Option<(String, i64, i64, i64)> = sqlx::query_as(
+            "SELECT u.handle,
+                    count(DISTINCT v.id),
+                    count(e.path) FILTER (WHERE NOT e.deleted AND e.kind = 'note'),
+                    coalesce(sum(b.size) FILTER (WHERE NOT e.deleted), 0)::bigint
+               FROM users u
+               LEFT JOIN vaults v ON v.user_id = u.id
+               LEFT JOIN entities e ON e.vault_id = v.id
+               LEFT JOIN blobs b ON b.hash = e.blob
+              WHERE u.id = $1
+              GROUP BY u.handle",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(row.map(|(handle, vaults, notes, bytes)| DeleteImpact { handle, vaults, notes, bytes }))
+    }
+
+    // --- devices ---
+
+    /// Devices, all of them or one user's (`user_filter`), most recent first.
+    pub async fn list_devices(&self, user_filter: Option<i64>) -> Result<Vec<DeviceRow>> {
+        let rows: Vec<DeviceRow> = sqlx::query_as(
+            "SELECT d.id, u.handle, d.name, d.platform,
+                    to_char(d.issued_at, 'YYYY-MM-DD') AS issued,
+                    to_char(d.last_seen_at, 'YYYY-MM-DD HH24:MI') AS last_seen,
+                    d.revoked_at IS NOT NULL AS revoked
+               FROM devices d JOIN users u ON u.id = d.user_id
+              WHERE ($1::bigint IS NULL OR d.user_id = $1)
+              ORDER BY d.issued_at DESC",
+        )
+        .bind(user_filter)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    // --- vaults ---
+
+    /// Vaults, all or one user's, with note count, bytes, and last-sync time —
+    /// names and sizes, never contents.
+    pub async fn list_vaults_admin(&self, user_filter: Option<i64>) -> Result<Vec<VaultRow>> {
+        let rows: Vec<VaultRow> = sqlx::query_as(
+            "SELECT v.id, v.name, u.handle,
+                    count(e.path) FILTER (WHERE NOT e.deleted AND e.kind = 'note') AS notes,
+                    coalesce(sum(b.size) FILTER (WHERE NOT e.deleted), 0)::bigint AS bytes,
+                    to_char((
+                        SELECT max(created_at) FROM entity_versions ev WHERE ev.vault_id = v.id
+                    ), 'YYYY-MM-DD HH24:MI') AS last_sync
+               FROM vaults v
+               JOIN users u ON u.id = v.user_id
+               LEFT JOIN entities e ON e.vault_id = v.id
+               LEFT JOIN blobs b ON b.hash = e.blob
+              WHERE ($1::bigint IS NULL OR v.user_id = $1)
+              GROUP BY v.id, u.handle
+              ORDER BY u.handle, v.name",
+        )
+        .bind(user_filter)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    // --- audit log ---
+
+    /// Appends one row to the operations log. Every mutation and sign-in calls it.
+    pub async fn log_event(&self, actor: &str, action: &str, detail: &str) -> Result<()> {
+        sqlx::query("INSERT INTO audit_log (actor, action, detail) VALUES ($1, $2, $3)")
+            .bind(actor)
+            .bind(action)
+            .bind(detail)
+            .execute(&self.pool)
+            .await?;
+
+        Ok(())
+    }
+
+    pub async fn recent_audit(&self, limit: i64) -> Result<Vec<AuditRow>> {
+        let rows: Vec<AuditRow> = sqlx::query_as(
+            "SELECT to_char(at, 'YYYY-MM-DD HH24:MI:SS') AS at, actor, action, detail
+               FROM audit_log ORDER BY at DESC LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows)
+    }
+
+    // --- account actions ---
+
+    /// Disables a user and revokes their live device tokens in one transaction —
+    /// keeps the files, kills the tokens.
+    pub async fn disable_user(&self, id: i64) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("UPDATE users SET disabled = TRUE WHERE id = $1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("UPDATE devices SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM admin_sessions WHERE user_id = $1").bind(id).execute(&mut *tx).await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Deletes a user and all their sync state in one transaction. Blobs are
+    /// content-addressed and shared across users, so they are left for the
+    /// deferred orphan sweep rather than removed here.
+    pub async fn delete_user(&self, id: i64) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        let vaults = "SELECT id FROM vaults WHERE user_id = $1";
+        sqlx::query(&format!("DELETE FROM entity_versions WHERE vault_id IN ({vaults})"))
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&format!("DELETE FROM entities WHERE vault_id IN ({vaults})"))
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM vaults WHERE user_id = $1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM admin_sessions WHERE user_id = $1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM devices WHERE user_id = $1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM users WHERE id = $1").bind(id).execute(&mut *tx).await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Revokes a device token. Returns the owner's handle for the log, or None if
+    /// the device was already revoked or gone.
+    pub async fn revoke_device(&self, id: i64) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "UPDATE devices d SET revoked_at = now()
+               FROM users u
+              WHERE d.id = $1 AND d.user_id = u.id AND d.revoked_at IS NULL
+          RETURNING u.handle",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+}
+
+// --- quotas, billing, and email-driven account flows (M7 deferred features) ---
+
+impl Store {
+    // --- quota ---
+
+    /// Refuses a write that would push the vault owner's stored content past their
+    /// quota. Usage is the sum of current blob sizes across the owner's vaults,
+    /// with the blob being replaced at this path discounted. No effective quota
+    /// (a plan with no match, and no override) means unlimited.
+    async fn enforce_quota(&self, vault: Uuid, path: &str, new_size: usize) -> Result<()> {
+        let Some(owner) = self.vault_owner(vault).await? else {
+            return Ok(());
+        };
+        let Some(limit) = self.user_effective_quota(owner).await? else {
+            return Ok(());
+        };
+
+        let used = self.user_usage_bytes(owner).await?;
+        let existing = self.path_blob_size(vault, path).await?;
+        let projected = used - existing + new_size as i64;
+
+        if projected > limit {
+            return Err(Error::QuotaExceeded { used: projected.max(0) as u64, limit: limit.max(0) as u64 });
+        }
+
+        Ok(())
+    }
+
+    /// The quota that applies to a user: their explicit override, else their
+    /// plan's quota, else `None` (unlimited — the plan was deleted or unknown).
+    pub async fn user_effective_quota(&self, user_id: i64) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar(
+            "SELECT coalesce(u.quota_bytes, p.quota_bytes)
+               FROM users u LEFT JOIN plans p ON p.name = u.plan
+              WHERE u.id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    // --- plans (operator-managed) ---
+
+    /// Every plan with a count of the users on it, for the Plans page.
+    pub async fn list_plans(&self) -> Result<Vec<PlanRow>> {
+        Ok(sqlx::query_as(
+            "SELECT p.name, p.quota_bytes, p.stripe_price_id, count(u.id) AS users
+               FROM plans p LEFT JOIN users u ON u.plan = p.name
+              GROUP BY p.name ORDER BY p.quota_bytes",
+        )
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
+    pub async fn create_plan(&self, name: &str, quota_bytes: i64, price: Option<&str>) -> Result<()> {
+        sqlx::query("INSERT INTO plans (name, quota_bytes, stripe_price_id) VALUES ($1, $2, $3)")
+            .bind(name)
+            .bind(quota_bytes)
+            .bind(price)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn update_plan(&self, name: &str, quota_bytes: i64, price: Option<&str>) -> Result<()> {
+        sqlx::query("UPDATE plans SET quota_bytes = $2, stripe_price_id = $3 WHERE name = $1")
+            .bind(name)
+            .bind(quota_bytes)
+            .bind(price)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn delete_plan(&self, name: &str) -> Result<()> {
+        sqlx::query("DELETE FROM plans WHERE name = $1").bind(name).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn count_users_on_plan(&self, name: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar("SELECT count(*) FROM users WHERE plan = $1").bind(name).fetch_one(&self.pool).await?)
+    }
+
+    /// The Stripe price id configured for a plan, if it is sold via Stripe.
+    pub async fn plan_price(&self, name: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar("SELECT stripe_price_id FROM plans WHERE name = $1")
+            .bind(name)
+            .fetch_optional(&self.pool)
+            .await?
+            .flatten())
+    }
+
+    /// The sum of current (non-deleted) blob sizes across a user's vaults.
+    pub async fn user_usage_bytes(&self, user_id: i64) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT coalesce(sum(b.size), 0)::bigint
+               FROM vaults v
+               JOIN entities e ON e.vault_id = v.id AND NOT e.deleted AND e.blob IS NOT NULL
+               JOIN blobs b ON b.hash = e.blob
+              WHERE v.user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?)
+    }
+
+    async fn path_blob_size(&self, vault: Uuid, path: &str) -> Result<i64> {
+        Ok(sqlx::query_scalar(
+            "SELECT coalesce(b.size, 0)::bigint
+               FROM entities e LEFT JOIN blobs b ON b.hash = e.blob
+              WHERE e.vault_id = $1 AND e.path = $2 AND NOT e.deleted",
+        )
+        .bind(vault)
+        .bind(path)
+        .fetch_optional(&self.pool)
+        .await?
+        .unwrap_or(0))
+    }
+
+    pub async fn set_quota(&self, user_id: i64, quota_bytes: Option<i64>) -> Result<()> {
+        sqlx::query("UPDATE users SET quota_bytes = $2 WHERE id = $1")
+            .bind(user_id)
+            .bind(quota_bytes)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn set_plan(&self, user_id: i64, plan: &str) -> Result<()> {
+        sqlx::query("UPDATE users SET plan = $2 WHERE id = $1")
+            .bind(user_id)
+            .bind(plan)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// A user's billing state, for the detail page and portal action.
+    pub async fn user_billing(&self, user_id: i64) -> Result<Option<Billing>> {
+        Ok(sqlx::query_as(
+            "SELECT plan, quota_bytes,
+                    subscription_status AS status, stripe_customer_id AS customer, email
+               FROM users WHERE id = $1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // --- account email + password ---
+
+    pub async fn set_email(&self, user_id: i64, email: &str) -> Result<()> {
+        sqlx::query("UPDATE users SET email = $2 WHERE id = $1")
+            .bind(user_id)
+            .bind(email)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub async fn find_user_by_email(&self, email: &str) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar("SELECT id FROM users WHERE email = $1")
+            .bind(email)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    /// Sets a user's password and severs their live credentials — every device
+    /// token and admin session — so a reset actually locks out whoever held them.
+    pub async fn set_password(&self, user_id: i64, password_hash: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
+            .bind(user_id)
+            .bind(password_hash)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("UPDATE devices SET revoked_at = now() WHERE user_id = $1 AND revoked_at IS NULL")
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM admin_sessions WHERE user_id = $1").bind(user_id).execute(&mut *tx).await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    // --- password reset tokens (email flow) ---
+
+    pub async fn create_password_reset(&self, user_id: i64, token_hash: &str, ttl_seconds: i64) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO password_resets (user_id, token_hash, expires_at)
+             VALUES ($1, $2, now() + ($3 * interval '1 second'))",
+        )
+        .bind(user_id)
+        .bind(token_hash)
+        .bind(ttl_seconds)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Redeems a reset token if live and unused, marking it used, and returns the
+    /// user it belongs to.
+    pub async fn consume_password_reset(&self, token_hash: &str) -> Result<Option<i64>> {
+        Ok(sqlx::query_scalar(
+            "UPDATE password_resets SET used = TRUE
+              WHERE token_hash = $1 AND NOT used AND expires_at > now()
+          RETURNING user_id",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // --- invites (email flow) ---
+
+    pub async fn create_invite(
+        &self,
+        email: &str,
+        invited_by: i64,
+        token_hash: &str,
+        ttl_seconds: i64,
+    ) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO invites (email, invited_by, token_hash, expires_at)
+             VALUES ($1, $2, $3, now() + ($4 * interval '1 second'))",
+        )
+        .bind(email)
+        .bind(invited_by)
+        .bind(token_hash)
+        .bind(ttl_seconds)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Redeems an invite token if live and unaccepted, marking it accepted, and
+    /// returns the address it was issued to.
+    pub async fn consume_invite(&self, token_hash: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "UPDATE invites SET accepted = TRUE
+              WHERE token_hash = $1 AND NOT accepted AND expires_at > now()
+          RETURNING email",
+        )
+        .bind(token_hash)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // --- subscription (Stripe webhook) ---
+
+    /// Binds a completed checkout to a user: records the Stripe customer and sets
+    /// the plan active.
+    pub async fn bind_subscription(&self, user_id: i64, customer: &str, plan: &str) -> Result<()> {
+        sqlx::query(
+            "UPDATE users SET stripe_customer_id = $2, plan = $3, subscription_status = 'active' WHERE id = $1",
+        )
+        .bind(user_id)
+        .bind(customer)
+        .bind(plan)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Updates only the subscription status (a `customer.subscription.updated`
+    /// event), keyed by Stripe customer id. Returns the user's handle for the log.
+    pub async fn set_subscription_status(&self, customer: &str, status: &str) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "UPDATE users SET subscription_status = $2 WHERE stripe_customer_id = $1 RETURNING handle",
+        )
+        .bind(customer)
+        .bind(status)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// Applies a subscription lifecycle change keyed by Stripe customer id. A
+    /// canceled subscription drops the user back to the free plan. Returns the
+    /// affected user's handle for the log, if any.
+    pub async fn set_subscription_by_customer(
+        &self,
+        customer: &str,
+        plan: &str,
+        status: &str,
+    ) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "UPDATE users SET plan = $2, subscription_status = $3
+               WHERE stripe_customer_id = $1
+           RETURNING handle",
+        )
+        .bind(customer)
+        .bind(plan)
+        .bind(status)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    // --- chart series (overview) ---
+
+    /// Cumulative on-disk bytes by day — the storage-growth chart.
+    pub async fn storage_growth(&self) -> Result<Vec<Point>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT to_char(day, 'MM-DD') AS label,
+                    sum(sum(stored_size)) OVER (ORDER BY day)::bigint AS total
+               FROM (SELECT date_trunc('day', created_at) AS day, stored_size FROM blobs) b
+              GROUP BY day ORDER BY day",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(label, value)| Point { label, value }).collect())
+    }
+
+    /// Sign-ins per day over the last 30 days — the activity chart.
+    pub async fn signins_by_day(&self) -> Result<Vec<Point>> {
+        let rows: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT to_char(date_trunc('day', at), 'MM-DD') AS label, count(*)::bigint AS total
+               FROM audit_log
+              WHERE action = 'sign-in' AND at > now() - interval '30 days'
+              GROUP BY 1 ORDER BY 1",
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(|(label, value)| Point { label, value }).collect())
+    }
+}
+
+/// A user's billing state for the panel.
+#[derive(sqlx::FromRow)]
+pub struct Billing {
+    pub plan: String,
+    pub quota_bytes: Option<i64>,
+    pub status: Option<String>,
+    pub customer: Option<String>,
+    pub email: Option<String>,
+}
+
+/// One labelled data point for a chart.
+pub struct Point {
+    pub label: String,
+    pub value: i64,
+}
+
+/// A plan row for the Plans page, with a count of the users on it.
+#[derive(sqlx::FromRow)]
+pub struct PlanRow {
+    pub name: String,
+    pub quota_bytes: i64,
+    pub stripe_price_id: Option<String>,
+    pub users: i64,
+}
+
+/// The nine columns every user row carries; `list_users` and `user_row` share it.
+const USER_SELECT: &str = "SELECT u.id, u.handle, u.is_admin, u.disabled, u.plan,
+        to_char(u.created_at, 'YYYY-MM-DD') AS created,
+        to_char(u.last_seen_at, 'YYYY-MM-DD HH24:MI') AS last_seen,
+        count(DISTINCT v.id) AS vaults,
+        coalesce(sum(b.size) FILTER (WHERE NOT e.deleted), 0)::bigint AS bytes
+   FROM users u
+   LEFT JOIN vaults v ON v.user_id = u.id
+   LEFT JOIN entities e ON e.vault_id = v.id
+   LEFT JOIN blobs b ON b.hash = e.blob";
+
+/// Free bytes on the filesystem holding the blob directory, 0 if it cannot be
+/// read (a fresh box before the first blob).
+#[allow(clippy::unnecessary_cast)] // libc statvfs field widths vary by platform.
+fn disk_free_bytes(root: &std::path::Path) -> u64 {
+    use std::os::unix::ffi::OsStrExt;
+
+    let Ok(path) = std::ffi::CString::new(root.as_os_str().as_bytes()) else {
+        return 0;
+    };
+    let mut stat: libc::statvfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statvfs(path.as_ptr(), &mut stat) } != 0 {
+        return 0;
+    }
+
+    stat.f_bavail as u64 * stat.f_frsize as u64
+}
+
+/// A live admin session, resolved from the request cookie.
+pub struct AdminSession {
+    pub user_id: i64,
+    pub handle: String,
+    pub csrf: String,
+}
+
+/// The Overview page's tallies.
+pub struct Overview {
+    pub users: i64,
+    pub admins: i64,
+    pub devices: i64,
+    pub live_devices: i64,
+    pub vaults: i64,
+    pub blobs: i64,
+    pub blob_size: i64,
+    pub blob_stored: i64,
+    pub disk_free: u64,
+}
+
+pub struct ConflictCopy {
+    pub vault: String,
+    pub path: String,
+    pub at: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct UserRow {
+    pub id: i64,
+    pub handle: String,
+    pub is_admin: bool,
+    pub disabled: bool,
+    pub plan: String,
+    pub created: String,
+    pub last_seen: Option<String>,
+    pub vaults: i64,
+    pub bytes: i64,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct DeviceRow {
+    pub id: i64,
+    pub handle: String,
+    pub name: String,
+    pub platform: String,
+    pub issued: String,
+    pub last_seen: Option<String>,
+    pub revoked: bool,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct VaultRow {
+    pub id: Uuid,
+    pub name: String,
+    pub handle: String,
+    pub notes: i64,
+    pub bytes: i64,
+    pub last_sync: Option<String>,
+}
+
+#[derive(sqlx::FromRow)]
+pub struct AuditRow {
+    pub at: String,
+    pub actor: String,
+    pub action: String,
+    pub detail: String,
+}
+
+pub struct DeleteImpact {
+    pub handle: String,
+    pub vaults: i64,
+    pub notes: i64,
+    pub bytes: i64,
 }
 
 /// The current state of a path, or the zero state if it has none yet.
@@ -641,6 +1414,9 @@ pub enum Error {
     /// An entity referenced content that was never uploaded — a client protocol
     /// error, surfaced as a 400.
     MissingBlob(String),
+    /// A write would push the owner's stored content past their quota — surfaced
+    /// as a 507.
+    QuotaExceeded { used: u64, limit: u64 },
 }
 
 impl fmt::Display for Error {
@@ -650,6 +1426,9 @@ impl fmt::Display for Error {
             Error::Migrate(error) => write!(f, "migration error: {error}"),
             Error::Blob(error) => write!(f, "blob store error: {error}"),
             Error::MissingBlob(hash) => write!(f, "referenced blob {hash} was not uploaded"),
+            Error::QuotaExceeded { used, limit } => {
+                write!(f, "quota exceeded: {used} bytes would exceed the {limit}-byte limit")
+            }
         }
     }
 }
@@ -805,6 +1584,39 @@ mod tests {
     }
 
     #[sqlx::test]
+    async fn deleting_a_user_removes_their_state_but_keeps_blobs(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        store.apply_put(vault, "Note.md", note(), 0, Some(b"a note worth a blob"), None).await.unwrap();
+        let user: i64 = sqlx::query_scalar("SELECT user_id FROM vaults WHERE id = $1")
+            .bind(vault)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+
+        store.delete_user(user).await.unwrap();
+
+        // The account and every trace of its sync state are gone.
+        assert!(store.user_row(user).await.unwrap().is_none());
+        let vaults: i64 = sqlx::query_scalar("SELECT count(*) FROM vaults WHERE user_id = $1")
+            .bind(user)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(vaults, 0);
+        let versions: i64 = sqlx::query_scalar("SELECT count(*) FROM entity_versions WHERE vault_id = $1")
+            .bind(vault)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(versions, 0);
+
+        // Blobs are content-addressed and shared, so they outlive the user and
+        // wait for the orphan sweep.
+        let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs").fetch_one(&store.pool).await.unwrap();
+        assert_eq!(blobs, 1);
+    }
+
+    #[sqlx::test]
     async fn identical_content_is_stored_once(pool: PgPool) {
         let (store, vault) = seed(pool).await;
         let content = b"the very same bytes in two places";
@@ -816,5 +1628,102 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(blobs, 1);
+    }
+
+    async fn owner_of(store: &Store, vault: Uuid) -> i64 {
+        sqlx::query_scalar("SELECT user_id FROM vaults WHERE id = $1").bind(vault).fetch_one(&store.pool).await.unwrap()
+    }
+
+    #[sqlx::test]
+    async fn a_write_past_the_quota_is_refused(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        let owner = owner_of(&store, vault).await;
+        store.set_quota(owner, Some(10)).await.unwrap();
+
+        let outcome = store.apply_put(vault, "Note.md", note(), 0, Some(b"far more than ten bytes of prose"), None).await;
+        assert!(matches!(outcome, Err(Error::QuotaExceeded { .. })));
+
+        // Raising the quota lets the same write through, and usage reflects it.
+        store.set_quota(owner, Some(10_000)).await.unwrap();
+        store.apply_put(vault, "Note.md", note(), 0, Some(b"now within quota"), None).await.unwrap();
+        assert_eq!(store.user_usage_bytes(owner).await.unwrap(), 16);
+    }
+
+    #[sqlx::test]
+    async fn a_reset_token_is_single_use_and_expires(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        let user = owner_of(&store, vault).await;
+
+        store.create_password_reset(user, "live", 3600).await.unwrap();
+        assert_eq!(store.consume_password_reset("live").await.unwrap(), Some(user));
+        // A second use, and an already-expired token, both fail.
+        assert_eq!(store.consume_password_reset("live").await.unwrap(), None);
+        store.create_password_reset(user, "stale", -1).await.unwrap();
+        assert_eq!(store.consume_password_reset("stale").await.unwrap(), None);
+    }
+
+    #[sqlx::test]
+    async fn an_invite_is_single_use_and_yields_its_email(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        let inviter = owner_of(&store, vault).await;
+
+        store.create_invite("bob@example.com", inviter, "tok", 3600).await.unwrap();
+        assert_eq!(store.consume_invite("tok").await.unwrap().as_deref(), Some("bob@example.com"));
+        assert!(store.consume_invite("tok").await.unwrap().is_none());
+    }
+
+    #[sqlx::test]
+    async fn a_subscription_binds_updates_and_cancels(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        let user = owner_of(&store, vault).await;
+
+        store.bind_subscription(user, "cus_1", "pro").await.unwrap();
+        let billing = store.user_billing(user).await.unwrap().unwrap();
+        assert_eq!(billing.plan, "pro");
+        assert_eq!(billing.status.as_deref(), Some("active"));
+        assert_eq!(billing.customer.as_deref(), Some("cus_1"));
+
+        assert_eq!(store.set_subscription_status("cus_1", "past_due").await.unwrap().as_deref(), Some("alice"));
+        assert_eq!(store.set_subscription_by_customer("cus_1", "free", "canceled").await.unwrap().as_deref(), Some("alice"));
+        assert_eq!(store.user_billing(user).await.unwrap().unwrap().plan, "free");
+    }
+
+    #[sqlx::test]
+    async fn setting_a_password_revokes_the_user_s_tokens(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        let user = owner_of(&store, vault).await;
+        store.create_device(user, "laptop", "macos", "token-hash").await.unwrap();
+
+        store.set_password(user, "new-argon2-hash").await.unwrap();
+
+        assert!(store.device_for_token("token-hash").await.unwrap().is_none());
+    }
+
+    #[sqlx::test]
+    async fn storage_growth_has_a_point_after_an_upload(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        store.apply_put(vault, "Note.md", note(), 0, Some(b"content worth charting"), None).await.unwrap();
+
+        assert!(!store.storage_growth().await.unwrap().is_empty());
+    }
+
+    #[sqlx::test]
+    async fn a_custom_plan_drives_a_user_s_quota(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        let user = owner_of(&store, vault).await;
+
+        // A seeded plan resolves the quota; a per-user override still wins.
+        assert_eq!(store.user_effective_quota(user).await.unwrap(), Some(1024 * 1024 * 1024)); // free = 1 GiB
+
+        store.create_plan("team", 5_000, Some("price_123")).await.unwrap();
+        store.set_plan(user, "team").await.unwrap();
+        assert_eq!(store.user_effective_quota(user).await.unwrap(), Some(5_000));
+        assert_eq!(store.plan_price("team").await.unwrap().as_deref(), Some("price_123"));
+
+        store.set_quota(user, Some(42)).await.unwrap();
+        assert_eq!(store.user_effective_quota(user).await.unwrap(), Some(42));
+
+        // The plan is in use, so the panel's delete guard would refuse it.
+        assert_eq!(store.count_users_on_plan("team").await.unwrap(), 1);
     }
 }

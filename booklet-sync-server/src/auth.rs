@@ -42,7 +42,7 @@ pub fn token_hash(token: &str) -> String {
     hex(&hasher.finalize())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 

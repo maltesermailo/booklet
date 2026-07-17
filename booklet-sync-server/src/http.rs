@@ -244,6 +244,9 @@ fn put_response(outcome: Result<PutOutcome, Error>) -> Response {
         Ok(PutOutcome::Applied(response)) => Json(response).into_response(),
         Ok(PutOutcome::Conflict(conflict)) => (StatusCode::CONFLICT, Json(conflict)).into_response(),
         Err(Error::MissingBlob(_)) => StatusCode::BAD_REQUEST.into_response(),
+        Err(error @ Error::QuotaExceeded { .. }) => {
+            (StatusCode::INSUFFICIENT_STORAGE, error.to_string()).into_response()
+        }
         Err(error) => internal(error),
     }
 }
@@ -372,6 +375,53 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
         assert_eq!(body.as_ref(), content);
+    }
+
+    #[sqlx::test]
+    async fn a_put_past_the_quota_is_refused_with_507(pool: sqlx::PgPool) {
+        let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
+        let user = store.create_user("alice", &auth::hash_password("secret").unwrap()).await.unwrap();
+        store.set_quota(user, Some(5)).await.unwrap(); // 5 bytes — anything real overflows it
+        let app = router(store);
+
+        let sign_in = proto::TokenRequest {
+            handle: "alice".into(),
+            password: "secret".into(),
+            device_name: "laptop".into(),
+            platform: "macos".into(),
+        };
+        let response = app.clone().oneshot(json_request("POST", "/auth/token", "", &sign_in)).await.unwrap();
+        let token: proto::TokenResponse = json(response).await;
+
+        let response = app
+            .clone()
+            .oneshot(json_request("POST", "/vaults", &token.token, &proto::PublishRequest { name: "Personal".into() }))
+            .await
+            .unwrap();
+        let vault: proto::PublishResponse = json(response).await;
+
+        let content = b"# a note that is far larger than five bytes\n";
+        let hash = crate::blob::hash(content);
+        let upload = Request::builder()
+            .method("PUT")
+            .uri(format!("/blobs/{hash}"))
+            .header(header::AUTHORIZATION, format!("Bearer {}", token.token))
+            .body(Body::from(content.to_vec()))
+            .unwrap();
+        app.clone().oneshot(upload).await.unwrap();
+
+        let put = proto::PutRequest {
+            kind: proto::EntityKind::Note,
+            base_version: 0,
+            blob: Some(hash),
+            moved_from: None,
+        };
+        let response = app
+            .oneshot(json_request("PUT", &format!("/vaults/{}/entities/Note.md", vault.id), &token.token, &put))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INSUFFICIENT_STORAGE);
     }
 
     #[sqlx::test]
