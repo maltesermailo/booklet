@@ -9,12 +9,21 @@ Rectangle {
     id: notice
 
     property string message: ""
+    // Positive confirmations (sign-in, publish) use the calmer brass accent;
+    // failures keep the ember bar that means "this one matters".
+    property bool positive: false
 
     visible: message !== ""
     height: visible ? 30 : 0
     color: Theme.page
 
     function show(text) {
+        notice.positive = false
+        notice.message = text
+    }
+
+    function inform(text) {
+        notice.positive = true
         notice.message = text
     }
 
@@ -30,6 +39,11 @@ Rectangle {
         target: Backlinks
         function onFailed(message) { notice.show(message) }
     }
+    Connections {
+        target: Sync
+        function onFailed(message) { notice.show(message) }
+        function onNotice(message) { notice.inform(message) }
+    }
 
     Rectangle {
         anchors.top: parent.top
@@ -38,13 +52,13 @@ Rectangle {
         color: Theme.pageLine
     }
 
-    // Ember, the same colour the app already uses to mean "this one matters".
+    // Ember for failures, brass for confirmations.
     Rectangle {
         anchors.left: parent.left
         anchors.verticalCenter: parent.verticalCenter
         width: 3
         height: parent.height - 8
-        color: Theme.ember
+        color: notice.positive ? Theme.brass : Theme.ember
     }
 
     Text {

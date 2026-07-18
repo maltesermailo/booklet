@@ -72,6 +72,16 @@ impl Client {
         Ok(published.id)
     }
 
+    /// Deletes a vault from the server. The server retains the data as a backup;
+    /// this just makes it vanish from the account and its sync routes.
+    pub fn delete_vault(&self, vault: &str) -> Result<(), ClientError> {
+        let response =
+            self.agent.delete(self.url(&format!("/vaults/{vault}"))).header("authorization", self.bearer()).call()?;
+        expect(&response, 204)?;
+
+        Ok(())
+    }
+
     pub fn changes(&self, vault: &str, since: u64) -> Result<proto::Changes, ClientError> {
         let mut response = self
             .agent

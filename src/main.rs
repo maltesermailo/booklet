@@ -56,6 +56,7 @@ fn main() {
     qtbridge::include_bytes_qml!("booklet/SignInDialog.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/VersionHistory.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/CloneDialog.qml", "qt/qml");
+    qtbridge::include_bytes_qml!("booklet/DeleteVaultDialog.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/Notice.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/TabStrip.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/IconButton.qml", "qt/qml");

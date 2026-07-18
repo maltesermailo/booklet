@@ -18,7 +18,7 @@ use axum::extract::{FromRef, FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use booklet_sync_proto as proto;
 use serde::Deserialize;
@@ -32,6 +32,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/auth/token", post(issue_token))
         .route("/vaults", get(list_vaults).post(publish_vault))
+        .route("/vaults/{id}", delete(delete_vault))
         .route("/vaults/{id}/changes", get(changes))
         .route("/vaults/{id}/entities/{*path}", put(put_entity).delete(delete_entity))
         .route("/vaults/{id}/history/{*path}", get(history))
@@ -111,6 +112,20 @@ async fn publish_vault(
 ) -> Response {
     match store.create_vault(device.user_id, &request.name).await {
         Ok(id) => Json(proto::PublishResponse { id: id.to_string() }).into_response(),
+        Err(error) => internal(error),
+    }
+}
+
+/// Soft-deletes the caller's vault (retained server-side as a backup). 404s on a
+/// vault that is not theirs or already gone.
+async fn delete_vault(State(store): State<Arc<Store>>, device: Device, Path(id): Path<String>) -> Response {
+    let vault = match authorize(&store, &device, &id).await {
+        Ok(vault) => vault,
+        Err(response) => return response,
+    };
+
+    match store.soft_delete_vault(vault, device.user_id).await {
+        Ok(_) => StatusCode::NO_CONTENT.into_response(),
         Err(error) => internal(error),
     }
 }
@@ -435,6 +450,45 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::INSUFFICIENT_STORAGE);
+    }
+
+    #[sqlx::test]
+    async fn a_deleted_vault_vanishes_from_the_list_and_its_routes(pool: sqlx::PgPool) {
+        let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
+        store.create_user("alice", &auth::hash_password("secret").unwrap()).await.unwrap();
+        let app = app_for(store);
+
+        let sign_in = proto::TokenRequest {
+            handle: "alice".into(),
+            password: "secret".into(),
+            device_name: "laptop".into(),
+            platform: "macos".into(),
+        };
+        let response = app.clone().oneshot(json_request("POST", "/auth/token", "", &sign_in)).await.unwrap();
+        let token: proto::TokenResponse = json(response).await;
+
+        let response = app
+            .clone()
+            .oneshot(json_request("POST", "/vaults", &token.token, &proto::PublishRequest { name: "Personal".into() }))
+            .await
+            .unwrap();
+        let vault: proto::PublishResponse = json(response).await;
+
+        // Delete it — the data stays server-side, but it disappears from the API.
+        let delete = Request::builder()
+            .method("DELETE")
+            .uri(format!("/vaults/{}", vault.id))
+            .header(header::AUTHORIZATION, format!("Bearer {}", token.token))
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(app.clone().oneshot(delete).await.unwrap().status(), StatusCode::NO_CONTENT);
+
+        let response = app.clone().oneshot(get("/vaults", &token.token)).await.unwrap();
+        let vaults: Vec<proto::VaultSummary> = json(response).await;
+        assert!(vaults.is_empty(), "a deleted vault is gone from the list");
+
+        let response = app.oneshot(get(&format!("/vaults/{}/changes?since=0", vault.id), &token.token)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "its sync routes 404");
     }
 
     #[sqlx::test]

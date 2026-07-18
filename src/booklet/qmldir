@@ -25,4 +25,5 @@ Notice 1.0 Notice.qml
 SignInDialog 1.0 SignInDialog.qml
 VersionHistory 1.0 VersionHistory.qml
 CloneDialog 1.0 CloneDialog.qml
+DeleteVaultDialog 1.0 DeleteVaultDialog.qml
 singleton Theme 1.0 Theme.qml

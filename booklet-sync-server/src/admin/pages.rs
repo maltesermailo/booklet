@@ -9,6 +9,7 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use maud::{html, Markup};
+use sqlx::types::Uuid;
 use std::time::Duration;
 
 pub async fn overview(State(state): State<AppState>, session: AdminSession, Theme(theme): Theme) -> Response {
@@ -167,14 +168,31 @@ pub async fn user_detail(
             p.sub { "Joined " (user.created) " · last seen " (when(&user.last_seen)) }
         }
 
-        section.actions {
-            @if !user.disabled {
-                form method="post" action=(format!("/admin/users/{}/disable", user.id)) {
-                    input type="hidden" name="csrf" value=(session.csrf);
-                    button type="submit" { "Disable" }
-                }
+        section {
+            h2 { "Manage" }
+            form.inline method="post" action=(format!("/admin/users/{}/rename", user.id)) {
+                input type="hidden" name="csrf" value=(session.csrf);
+                label.inline-label { "Handle" input type="text" name="handle" value=(user.handle); }
+                button type="submit" { "Rename" }
             }
-            a.danger href=(format!("/admin/users/{}/delete", user.id)) { "Delete…" }
+            div.actions {
+                form method="post" action=(format!("/admin/users/{}/admin", user.id)) {
+                    input type="hidden" name="csrf" value=(session.csrf);
+                    button type="submit" { @if user.is_admin { "Revoke admin" } @else { "Make admin" } }
+                }
+                @if user.disabled {
+                    form method="post" action=(format!("/admin/users/{}/enable", user.id)) {
+                        input type="hidden" name="csrf" value=(session.csrf);
+                        button type="submit" { "Enable" }
+                    }
+                } @else {
+                    form method="post" action=(format!("/admin/users/{}/disable", user.id)) {
+                        input type="hidden" name="csrf" value=(session.csrf);
+                        button type="submit" { "Disable" }
+                    }
+                }
+                a.danger href=(format!("/admin/users/{}/delete", user.id)) { "Delete…" }
+            }
         }
 
         (storage_and_plan(&session, &user, &billing, usage, limit, &plans, state.stripe.is_some()))
@@ -182,7 +200,7 @@ pub async fn user_detail(
 
         section {
             h2 { "Vaults" }
-            (vaults_table(&vaults, false))
+            (vaults_table(&session, &vaults, false))
         }
 
         section {
@@ -327,6 +345,46 @@ pub(super) fn confirm_delete_body(
     }
 }
 
+pub async fn confirm_purge_vault(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Theme(theme): Theme,
+    Path(id): Path<String>,
+) -> Response {
+    let Ok(vault) = Uuid::parse_str(&id) else { return not_found() };
+    let Ok(Some((name, _owner))) = state.store.vault_label(vault).await else { return not_found() };
+
+    let body = confirm_purge_body(&session, &id, &name, None);
+    view::layout(theme, "Delete vault", "/admin/vaults", &session, body).into_response()
+}
+
+/// The typed-confirmation page for permanently deleting a vault, reused by the
+/// POST when the typed name does not match.
+pub(super) fn confirm_purge_body(session: &AdminSession, id: &str, name: &str, error: Option<&str>) -> Markup {
+    html! {
+        div.head { h1 { "Delete “" (name) "” forever" } }
+
+        section {
+            p.warn-box {
+                "This permanently removes the vault and all of its version history. It cannot be undone — "
+                "use plain Delete instead if you might want it back."
+            }
+            @if let Some(message) = error {
+                p.error { (message) }
+            }
+            form method="post" action=(format!("/admin/vaults/{id}/purge")) {
+                input type="hidden" name="csrf" value=(session.csrf);
+                label { "Type the vault name " b { (name) } " to confirm"
+                        input type="text" name="confirm" autocomplete="off"; }
+                div.actions {
+                    button.danger type="submit" { "Delete permanently" }
+                    a href="/admin/vaults" { "Cancel" }
+                }
+            }
+        }
+    }
+}
+
 pub async fn devices(State(state): State<AppState>, session: AdminSession, Theme(theme): Theme) -> Response {
     let devices = match state.store.list_devices(None).await {
         Ok(devices) => devices,
@@ -349,7 +407,7 @@ pub async fn vaults(State(state): State<AppState>, session: AdminSession, Theme(
 
     let body = html! {
         div.head { h1 { "Vaults" } }
-        section { (vaults_table(&vaults, true)) }
+        section { (vaults_table(&session, &vaults, true)) }
     };
 
     view::layout(theme, "Vaults", "/admin/vaults", &session, body).into_response()
@@ -385,7 +443,9 @@ pub async fn log(State(state): State<AppState>, session: AdminSession, Theme(the
 // --- shared table fragments ---
 
 /// `owner` adds an owner column (the all-users lists); a per-user page omits it.
-fn vaults_table(vaults: &[crate::store::VaultRow], owner: bool) -> Markup {
+/// Every row is editable — rename inline, and soft-delete / restore / permanent
+/// delete.
+fn vaults_table(session: &AdminSession, vaults: &[crate::store::VaultRow], owner: bool) -> Markup {
     html! {
         @if vaults.is_empty() {
             p.empty { "No vaults." }
@@ -393,16 +453,37 @@ fn vaults_table(vaults: &[crate::store::VaultRow], owner: bool) -> Markup {
             table {
                 thead { tr {
                     th { "Vault" } @if owner { th { "Owner" } }
-                    th.num { "Notes" } th.num { "Bytes" } th { "Last sync" }
+                    th.num { "Notes" } th.num { "Bytes" } th { "Last sync" } th {}
                 } }
                 tbody {
                     @for vault in vaults {
                         tr {
-                            td { (vault.name) }
+                            td {
+                                form.inline method="post" action=(format!("/admin/vaults/{}/rename", vault.id)) {
+                                    input type="hidden" name="csrf" value=(session.csrf);
+                                    input type="text" name="name" value=(vault.name);
+                                    button.link type="submit" { "Rename" }
+                                }
+                                @if vault.deleted { span.tag.warn { "deleted" } }
+                            }
                             @if owner { td { (vault.handle) } }
                             td.num { (vault.notes) }
                             td.num { (bytes(vault.bytes as u64)) }
                             td { (when(&vault.last_sync)) }
+                            td {
+                                @if vault.deleted {
+                                    form.inline method="post" action=(format!("/admin/vaults/{}/restore", vault.id)) {
+                                        input type="hidden" name="csrf" value=(session.csrf);
+                                        button.link type="submit" { "Restore" }
+                                    }
+                                    a.danger href=(format!("/admin/vaults/{}/purge", vault.id)) { "Delete forever…" }
+                                } @else {
+                                    form.inline method="post" action=(format!("/admin/vaults/{}/delete", vault.id)) {
+                                        input type="hidden" name="csrf" value=(session.csrf);
+                                        button.link type="submit" { "Delete" }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -430,12 +511,16 @@ fn devices_table(session: &AdminSession, devices: &[crate::store::DeviceRow], ow
                             td { (device.issued) }
                             td { (when(&device.last_seen)) }
                             td { @if device.revoked { span.tag.warn { "revoked" } } @else { span.tag.ok { "live" } } }
-                            td {
+                            td.rowactions {
                                 @if !device.revoked {
-                                    form method="post" action=(format!("/admin/devices/{}/revoke", device.id)) {
+                                    form.inline method="post" action=(format!("/admin/devices/{}/revoke", device.id)) {
                                         input type="hidden" name="csrf" value=(session.csrf);
                                         button.link type="submit" { "Revoke" }
                                     }
+                                }
+                                form.inline method="post" action=(format!("/admin/devices/{}/delete", device.id)) {
+                                    input type="hidden" name="csrf" value=(session.csrf);
+                                    button.link type="submit" { "Delete" }
                                 }
                             }
                         }

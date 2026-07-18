@@ -95,13 +95,14 @@ impl Store {
         Ok(seq as u64)
     }
 
-    /// The vaults a user owns, for `GET /vaults`.
+    /// The vaults a user owns, for `GET /vaults`. Soft-deleted vaults are hidden.
     pub async fn list_vaults(&self, user_id: i64) -> Result<Vec<proto::VaultSummary>> {
-        let rows: Vec<(Uuid, String, i64)> =
-            sqlx::query_as("SELECT id, name, seq FROM vaults WHERE user_id = $1 ORDER BY created_at")
-                .bind(user_id)
-                .fetch_all(&self.pool)
-                .await?;
+        let rows: Vec<(Uuid, String, i64)> = sqlx::query_as(
+            "SELECT id, name, seq FROM vaults WHERE user_id = $1 AND deleted_at IS NULL ORDER BY created_at",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(rows
             .into_iter()
@@ -109,13 +110,29 @@ impl Store {
             .collect())
     }
 
-    /// The owner of a vault, so a route can refuse a vault that is not the
-    /// caller's — with a 404, never confirming it exists to a stranger.
+    /// The owner of a live vault, so a route can refuse a vault that is not the
+    /// caller's — with a 404, never confirming it exists to a stranger. A
+    /// soft-deleted vault reads as absent, so every sync route 404s on it.
     pub async fn vault_owner(&self, vault: Uuid) -> Result<Option<i64>> {
-        Ok(sqlx::query_scalar("SELECT user_id FROM vaults WHERE id = $1")
+        Ok(sqlx::query_scalar("SELECT user_id FROM vaults WHERE id = $1 AND deleted_at IS NULL")
             .bind(vault)
             .fetch_optional(&self.pool)
             .await?)
+    }
+
+    /// Soft-deletes a vault the user owns: it vanishes from their list and every
+    /// sync route, but its rows and blobs stay as a backup. Returns whether one
+    /// was deleted.
+    pub async fn soft_delete_vault(&self, vault: Uuid, owner: i64) -> Result<bool> {
+        let updated = sqlx::query(
+            "UPDATE vaults SET deleted_at = now() WHERE id = $1 AND user_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(vault)
+        .bind(owner)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(updated.rows_affected() == 1)
     }
 
     // --- accounts and devices (auth) ---
@@ -651,7 +668,7 @@ impl Store {
     /// names and sizes, never contents.
     pub async fn list_vaults_admin(&self, user_filter: Option<i64>) -> Result<Vec<VaultRow>> {
         let rows: Vec<VaultRow> = sqlx::query_as(
-            "SELECT v.id, v.name, u.handle,
+            "SELECT v.id, v.name, u.handle, v.deleted_at IS NOT NULL AS deleted,
                     count(e.path) FILTER (WHERE NOT e.deleted AND e.kind = 'note') AS notes,
                     coalesce(sum(b.size) FILTER (WHERE NOT e.deleted), 0)::bigint AS bytes,
                     to_char((
@@ -752,6 +769,76 @@ impl Store {
         .bind(id)
         .fetch_optional(&self.pool)
         .await?)
+    }
+
+    // --- admin operational edits/deletes (M7 "edit/delete everything") ---
+
+    pub async fn rename_user(&self, id: i64, handle: &str) -> Result<()> {
+        sqlx::query("UPDATE users SET handle = $2 WHERE id = $1").bind(id).bind(handle).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn set_admin(&self, id: i64, is_admin: bool) -> Result<()> {
+        sqlx::query("UPDATE users SET is_admin = $2 WHERE id = $1")
+            .bind(id)
+            .bind(is_admin)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// Re-enables a disabled user (the inverse of `disable_user`). Their revoked
+    /// device tokens stay revoked — they sign in fresh.
+    pub async fn enable_user(&self, id: i64) -> Result<()> {
+        sqlx::query("UPDATE users SET disabled = FALSE WHERE id = $1").bind(id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Hard-deletes a device row, first detaching it from any history rows.
+    pub async fn delete_device(&self, id: i64) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("UPDATE entity_versions SET device_id = NULL WHERE device_id = $1").bind(id).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM devices WHERE id = $1").bind(id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// A vault's name and owner handle, for confirmations and the log.
+    pub async fn vault_label(&self, vault: Uuid) -> Result<Option<(String, String)>> {
+        Ok(sqlx::query_as(
+            "SELECT v.name, u.handle FROM vaults v JOIN users u ON u.id = v.user_id WHERE v.id = $1",
+        )
+        .bind(vault)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    pub async fn rename_vault(&self, vault: Uuid, name: &str) -> Result<()> {
+        sqlx::query("UPDATE vaults SET name = $2 WHERE id = $1").bind(vault).bind(name).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Soft-deletes any vault (admin, no owner check) — recoverable via
+    /// [`restore_vault`](Self::restore_vault).
+    pub async fn admin_soft_delete_vault(&self, vault: Uuid) -> Result<()> {
+        sqlx::query("UPDATE vaults SET deleted_at = now() WHERE id = $1").bind(vault).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    pub async fn restore_vault(&self, vault: Uuid) -> Result<()> {
+        sqlx::query("UPDATE vaults SET deleted_at = NULL WHERE id = $1").bind(vault).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Permanently removes a vault and all its sync rows. Blobs are
+    /// content-addressed and shared, so they are left for the orphan sweep.
+    pub async fn purge_vault(&self, vault: Uuid) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("DELETE FROM entity_versions WHERE vault_id = $1").bind(vault).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM entities WHERE vault_id = $1").bind(vault).execute(&mut *tx).await?;
+        sqlx::query("DELETE FROM vaults WHERE id = $1").bind(vault).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -1228,6 +1315,7 @@ pub struct VaultRow {
     pub id: Uuid,
     pub name: String,
     pub handle: String,
+    pub deleted: bool,
     pub notes: i64,
     pub bytes: i64,
     pub last_sync: Option<String>,
@@ -1737,6 +1825,40 @@ mod tests {
         store.apply_put(vault, "Note.md", note(), 0, Some(b"content worth charting"), None).await.unwrap();
 
         assert!(!store.storage_growth().await.unwrap().is_empty());
+    }
+
+    #[sqlx::test]
+    async fn admin_edits_and_deletes_operational_entities(pool: PgPool) {
+        let (store, vault) = seed(pool).await;
+        let user = owner_of(&store, vault).await;
+        store.apply_put(vault, "Note.md", note(), 0, Some(b"a note worth a blob"), None).await.unwrap();
+
+        // User edits.
+        store.rename_user(user, "alice2").await.unwrap();
+        assert_eq!(store.user_row(user).await.unwrap().unwrap().handle, "alice2");
+        store.set_admin(user, true).await.unwrap();
+        assert!(store.user_row(user).await.unwrap().unwrap().is_admin);
+        store.disable_user(user).await.unwrap();
+        assert!(store.user_row(user).await.unwrap().unwrap().disabled);
+        store.enable_user(user).await.unwrap();
+        assert!(!store.user_row(user).await.unwrap().unwrap().disabled);
+
+        // Vault: soft-delete hides it, restore brings it back, purge removes it.
+        store.admin_soft_delete_vault(vault).await.unwrap();
+        assert!(store.list_vaults(user).await.unwrap().is_empty());
+        store.restore_vault(vault).await.unwrap();
+        assert_eq!(store.list_vaults(user).await.unwrap().len(), 1);
+
+        store.purge_vault(vault).await.unwrap();
+        let entities: i64 = sqlx::query_scalar("SELECT count(*) FROM entities WHERE vault_id = $1")
+            .bind(vault)
+            .fetch_one(&store.pool)
+            .await
+            .unwrap();
+        assert_eq!(entities, 0);
+        // The blob outlives the purge (content-addressed, left for the orphan sweep).
+        let blobs: i64 = sqlx::query_scalar("SELECT count(*) FROM blobs").fetch_one(&store.pool).await.unwrap();
+        assert_eq!(blobs, 1);
     }
 
     #[sqlx::test]

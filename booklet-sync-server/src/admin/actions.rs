@@ -15,6 +15,7 @@ use axum::response::{IntoResponse, Redirect, Response};
 use axum::Form;
 use maud::html;
 use serde::Deserialize;
+use sqlx::types::Uuid;
 
 /// The bare CSRF token, for actions that carry no other field.
 #[derive(Deserialize)]
@@ -303,6 +304,182 @@ async fn apply_event(state: &AppState, event: &serde_json::Value) {
         }
         _ => {}
     }
+}
+
+// --- user edits (rename, admin flag, enable) ---
+
+#[derive(Deserialize)]
+pub struct HandleForm {
+    csrf: String,
+    handle: String,
+}
+
+pub async fn rename_user(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Path(id): Path<i64>,
+    Form(form): Form<HandleForm>,
+) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
+        return response;
+    }
+    let handle = form.handle.trim();
+    if !handle.is_empty() {
+        match state.store.rename_user(id, handle).await {
+            Ok(_) => {
+                let _ = state.store.log_event(&session.handle, "rename-user", &format!("id {id} → {handle}")).await;
+            }
+            Err(store::Error::Db(sqlx::Error::Database(db))) if db.is_unique_violation() => {}
+            Err(error) => return internal(error),
+        }
+    }
+    Redirect::to(&format!("/admin/users/{id}")).into_response()
+}
+
+pub async fn toggle_admin(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Path(id): Path<i64>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
+        return response;
+    }
+    let was_admin = state.store.user_row(id).await.ok().flatten().map(|user| user.is_admin).unwrap_or(false);
+    if let Err(error) = state.store.set_admin(id, !was_admin).await {
+        return internal(error);
+    }
+    let action = if was_admin { "revoke-admin" } else { "grant-admin" };
+    let _ = state.store.log_event(&session.handle, action, &format!("id {id}")).await;
+
+    Redirect::to(&format!("/admin/users/{id}")).into_response()
+}
+
+pub async fn enable_user(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Path(id): Path<i64>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
+        return response;
+    }
+    if let Err(error) = state.store.enable_user(id).await {
+        return internal(error);
+    }
+    let _ = state.store.log_event(&session.handle, "enable-user", &format!("id {id}")).await;
+
+    Redirect::to(&format!("/admin/users/{id}")).into_response()
+}
+
+pub async fn delete_device(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Path(id): Path<i64>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
+        return response;
+    }
+    if let Err(error) = state.store.delete_device(id).await {
+        return internal(error);
+    }
+    let _ = state.store.log_event(&session.handle, "delete-device", &format!("#{id}")).await;
+
+    Redirect::to("/admin/devices").into_response()
+}
+
+// --- vault edits/deletes (soft by default, hard behind a typed confirm) ---
+
+#[derive(Deserialize)]
+pub struct VaultNameForm {
+    csrf: String,
+    name: String,
+}
+
+pub async fn rename_vault(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Path(id): Path<String>,
+    Form(form): Form<VaultNameForm>,
+) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
+        return response;
+    }
+    let Ok(vault) = Uuid::parse_str(&id) else { return StatusCode::NOT_FOUND.into_response() };
+    let name = form.name.trim();
+    if !name.is_empty() {
+        if let Err(error) = state.store.rename_vault(vault, name).await {
+            return internal(error);
+        }
+        let _ = state.store.log_event(&session.handle, "rename-vault", name).await;
+    }
+    Redirect::to("/admin/vaults").into_response()
+}
+
+pub async fn delete_vault(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Path(id): Path<String>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
+        return response;
+    }
+    let Ok(vault) = Uuid::parse_str(&id) else { return StatusCode::NOT_FOUND.into_response() };
+    if let Err(error) = state.store.admin_soft_delete_vault(vault).await {
+        return internal(error);
+    }
+    let _ = state.store.log_event(&session.handle, "delete-vault", &id).await;
+
+    Redirect::to("/admin/vaults").into_response()
+}
+
+pub async fn restore_vault(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Path(id): Path<String>,
+    Form(form): Form<CsrfForm>,
+) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
+        return response;
+    }
+    let Ok(vault) = Uuid::parse_str(&id) else { return StatusCode::NOT_FOUND.into_response() };
+    if let Err(error) = state.store.restore_vault(vault).await {
+        return internal(error);
+    }
+    let _ = state.store.log_event(&session.handle, "restore-vault", &id).await;
+
+    Redirect::to("/admin/vaults").into_response()
+}
+
+pub async fn purge_vault(
+    State(state): State<AppState>,
+    session: AdminSession,
+    Theme(theme): Theme,
+    Path(id): Path<String>,
+    Form(form): Form<DeleteUserForm>,
+) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
+        return response;
+    }
+    let Ok(vault) = Uuid::parse_str(&id) else { return StatusCode::NOT_FOUND.into_response() };
+    let Ok(Some((name, _owner))) = state.store.vault_label(vault).await else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+
+    // Irreversible — the typed name must match.
+    if form.confirm.trim() != name {
+        let body = super::pages::confirm_purge_body(&session, &id, &name, Some("The typed name did not match."));
+        return (StatusCode::BAD_REQUEST, view::layout(theme, "Delete vault", "/admin/vaults", &session, body))
+            .into_response();
+    }
+    if let Err(error) = state.store.purge_vault(vault).await {
+        return internal(error);
+    }
+    let _ = state.store.log_event(&session.handle, "purge-vault", &format!("{name} ({id})")).await;
+
+    Redirect::to("/admin/vaults").into_response()
 }
 
 // --- helpers ---

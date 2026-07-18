@@ -239,6 +239,7 @@ ApplicationWindow {
             onOpenPicker: root.pickerOpen = true
             onOpenShelf: root.shelfOpen = true
             onSignInRequested: signInDialog.open()
+            onDeleteVaultRequested: (name) => { deleteVaultDialog.vaultName = name; deleteVaultDialog.open() }
             onOpenHistory: if (NoteEditor.current_id() !== "") versionHistory.openFor(NoteEditor.current_id())
         }
 
@@ -355,9 +356,11 @@ ApplicationWindow {
         id: settingsView
         onSignInRequested: signInDialog.open()
         onCloneRequested: cloneDialog.openClone()
+        onDeleteVaultRequested: (name) => { deleteVaultDialog.vaultName = name; deleteVaultDialog.open() }
     }
 
     CloneDialog { id: cloneDialog }
+    DeleteVaultDialog { id: deleteVaultDialog }
 
     VaultPicker {
         anchors.fill: parent

@@ -85,6 +85,13 @@ impl Sync {
         self.send(Command::Publish(name));
     }
 
+    /// Deletes the active vault from the server. The server keeps the data as a
+    /// backup and every local file stays on disk; the vault becomes local-only.
+    #[qslot]
+    fn delete_vault(&mut self) {
+        self.send(Command::DeleteVault);
+    }
+
     /// `{ vault_id, path }` — clones a server vault into the empty local folder.
     #[qslot]
     fn clone_vault(&mut self, payload: String) {
@@ -134,11 +141,19 @@ impl Sync {
         self.send(Command::DismissFlag(path));
     }
 
-    /// The current status as `{ state, flagged_count }`, for the pill on load.
+    /// The current status as `{ state, flagged_count, signed_in, published }`,
+    /// for the pill and the sync menu on load.
     #[qslot]
     fn status(&self) -> String {
         let shared = self.shared.lock().unwrap();
-        status_json(&shared.status, shared.flagged.len())
+        status_json(&shared.status, shared.flagged.len(), shared.signed_in, shared.published)
+    }
+
+    /// Whether the active vault is already bound to a server vault, so the UI can
+    /// hide "Publish" once it is.
+    #[qslot]
+    fn is_published(&self) -> bool {
+        self.shared.lock().unwrap().published
     }
 
     /// Whether the note at absolute `path` is flagged, for the editor on open.
@@ -157,19 +172,21 @@ impl Sync {
     /// worker thread through the `QmlMethodInvoker`.
     #[qslot]
     fn pump(&mut self) {
-        let (status, flagged_count, events) = {
+        let (status, flagged_count, signed_in, published, events) = {
             let mut shared = self.shared.lock().unwrap();
-            (shared.status.clone(), shared.flagged.len(), std::mem::take(&mut shared.events))
+            let events = std::mem::take(&mut shared.events);
+            (shared.status.clone(), shared.flagged.len(), shared.signed_in, shared.published, events)
         };
 
         for event in events {
             match event {
-                Event::Status => self.status_changed(status_json(&status, flagged_count)),
+                Event::Status => self.status_changed(status_json(&status, flagged_count, signed_in, published)),
                 Event::NoteChanged(id) => self.note_changed(id),
                 Event::SignedIn(ok) => self.signed_in(ok),
                 Event::VaultsReady(json) => self.vaults_ready(json),
                 Event::HistoryReady(json) => self.history_ready(json),
                 Event::VersionReady(json) => self.version_ready(json),
+                Event::Notice(message) => self.notice(message),
                 Event::Failed(message) => self.failed(message),
             }
         }
@@ -186,6 +203,10 @@ impl Sync {
 
     #[qsignal]
     fn signed_in(&mut self, ok: bool);
+
+    /// A positive confirmation the user should see (sign-in, publish).
+    #[qsignal]
+    fn notice(&mut self, message: String);
 
     /// The user's server vaults as JSON, for the clone picker.
     #[qsignal]
@@ -221,6 +242,7 @@ enum Command {
     SetVault(PathBuf),
     Sync,
     Publish(String),
+    DeleteVault,
     Clone { vault_id: String, root: PathBuf },
     RequestVaults,
     RequestHistory(String),
@@ -236,6 +258,8 @@ enum Event {
     VaultsReady(String),
     HistoryReady(String),
     VersionReady(String),
+    /// A positive confirmation for the user (e.g. "Published …").
+    Notice(String),
     Failed(String),
 }
 
@@ -243,6 +267,10 @@ enum Event {
 struct Shared {
     status: String,
     signed_in: bool,
+    /// Whether the active vault is bound to a server vault (already published or
+    /// cloned). Drives the "Publish" affordance so a vault is never published
+    /// twice.
+    published: bool,
     /// Flagged notes as **absolute** paths (what the editor and pill compare).
     flagged: Vec<String>,
     events: Vec<Event>,
@@ -292,6 +320,7 @@ impl Worker {
                 Command::SetVault(root) => self.set_vault(root),
                 Command::Sync => self.sync(),
                 Command::Publish(name) => self.publish(&name),
+                Command::DeleteVault => self.delete_server_vault(),
                 Command::Clone { vault_id, root } => self.clone_vault(vault_id, root),
                 Command::RequestVaults => self.request_vaults(),
                 Command::RequestHistory(path) => self.request_history(&path),
@@ -322,7 +351,7 @@ impl Worker {
                 self.client = Some(client);
                 self.set_status("offline");
                 self.set_signed_in(true);
-                self.commit(vec![Event::Status, Event::SignedIn(true)]);
+                self.commit(vec![Event::Status, Event::SignedIn(true), Event::Notice("Signed in.".into())]);
                 self.sync();
             }
             Err(error) => {
@@ -346,6 +375,7 @@ impl Worker {
         let bound = state.vault_id.is_some();
 
         self.set_flagged_from(&root, &state.flagged);
+        self.set_published(bound);
         self.vault = Some(VaultSync { root, state, manifest });
         self.set_status("offline");
         self.commit(vec![Event::Status]);
@@ -387,8 +417,13 @@ impl Worker {
         let Some(client) = self.client.clone() else {
             return self.fail("Sign in before publishing.");
         };
-        if self.vault.is_none() {
-            return;
+        // A vault is published exactly once: re-publishing would create a second,
+        // duplicate server vault. The worker processes commands serially, so this
+        // guard also catches a rapid double-click.
+        match self.vault.as_ref().map(|vault| vault.state.vault_id.is_some()) {
+            None => return self.fail("Open a vault before publishing."),
+            Some(true) => return self.fail("This vault is already published."),
+            Some(false) => {}
         }
         let server_url = self.credentials.as_ref().map(|c| c.server_url.clone());
 
@@ -399,9 +434,40 @@ impl Worker {
                 vault.state.server_url = server_url;
                 vault.manifest = Manifest::default(); // force a full push of everything
                 let _ = vault.state.save(&vault.root);
+                self.set_published(true);
+                self.commit(vec![Event::Notice(format!("Published “{name}”."))]);
                 self.sync();
             }
             Err(error) => self.fail(&format!("Could not publish: {error}")),
+        }
+    }
+
+    fn delete_server_vault(&mut self) {
+        let Some(client) = self.client.clone() else {
+            return self.fail("Sign in before deleting.");
+        };
+        let Some(vault_id) = self.vault.as_ref().and_then(|vault| vault.state.vault_id.clone()) else {
+            return self.fail("This vault isn't published.");
+        };
+
+        match client.delete_vault(&vault_id) {
+            Ok(()) => {
+                // Unbind locally but keep every markdown file — the local backup.
+                let vault = self.vault.as_mut().unwrap();
+                vault.state = SyncState::default();
+                vault.manifest = Manifest::default();
+                let _ = vault.state.save(&vault.root);
+                let root = vault.root.clone();
+
+                self.set_published(false);
+                self.set_flagged_from(&root, &[]);
+                self.set_status("offline");
+                self.commit(vec![
+                    Event::Status,
+                    Event::Notice("Vault deleted from the server. Your local files are kept.".into()),
+                ]);
+            }
+            Err(error) => self.fail(&format!("Could not delete the vault: {error}")),
         }
     }
 
@@ -417,6 +483,7 @@ impl Worker {
         }
 
         self.vault = Some(VaultSync { root, state, manifest: Manifest::default() });
+        self.set_published(true);
         self.sync();
     }
 
@@ -503,6 +570,10 @@ impl Worker {
         self.shared.lock().unwrap().signed_in = signed_in;
     }
 
+    fn set_published(&self, published: bool) {
+        self.shared.lock().unwrap().published = published;
+    }
+
     fn set_flagged_from(&self, root: &Path, relative_paths: &[String]) {
         let absolute = relative_paths.iter().map(|path| absolute(root, path)).collect();
         self.shared.lock().unwrap().flagged = absolute;
@@ -577,8 +648,14 @@ fn token_path() -> PathBuf {
         .join("sync-token.json")
 }
 
-fn status_json(state: &str, flagged_count: usize) -> String {
-    serde_json::json!({ "state": state, "flagged_count": flagged_count }).to_string()
+fn status_json(state: &str, flagged_count: usize, signed_in: bool, published: bool) -> String {
+    serde_json::json!({
+        "state": state,
+        "flagged_count": flagged_count,
+        "signed_in": signed_in,
+        "published": published,
+    })
+    .to_string()
 }
 
 fn string(value: &serde_json::Value, key: &str) -> String {

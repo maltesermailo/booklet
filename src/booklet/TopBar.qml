@@ -32,7 +32,10 @@ Rectangle {
     // Live sync status, driven by the Sync engine.
     property string syncState: "offline"
     property int syncFlagged: 0
+    property bool signedIn: false
+    property bool published: false
     signal signInRequested()
+    signal deleteVaultRequested(string name)
     signal openHistory()
 
     readonly property string backIcon: "M15 5l-7 7 7 7"
@@ -59,6 +62,8 @@ Rectangle {
         var status = JSON.parse(Sync.status())
         bar.syncState = status.state
         bar.syncFlagged = status.flagged_count
+        bar.signedIn = status.signed_in
+        bar.published = status.published
     }
 
     Component.onCompleted: {
@@ -76,6 +81,8 @@ Rectangle {
             var status = JSON.parse(payload)
             bar.syncState = status.state
             bar.syncFlagged = status.flagged_count
+            bar.signedIn = status.signed_in
+            bar.published = status.published
         }
     }
     Connections {
@@ -348,17 +355,37 @@ Rectangle {
         }
         AppMenuItem {
             text: "Publish this vault"
+            // Only once, and only when signed in — republishing makes a duplicate
+            // server vault.
+            visible: bar.signedIn && !bar.published
+            height: visible ? implicitHeight : 0
             onTriggered: Sync.publish(bar.activeName)
+        }
+        AppMenuItem {
+            text: "Published ✓"
+            enabled: false
+            visible: bar.published
+            height: visible ? implicitHeight : 0
+        }
+        AppMenuItem {
+            text: "Delete server vault…"
+            visible: bar.published
+            height: visible ? implicitHeight : 0
+            onTriggered: bar.deleteVaultRequested(bar.activeName)
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: Theme.pageLine }
         }
         AppMenuItem {
             text: "Sign in…"
+            visible: !bar.signedIn
+            height: visible ? implicitHeight : 0
             onTriggered: bar.signInRequested()
         }
         AppMenuItem {
             text: "Sign out"
+            visible: bar.signedIn
+            height: visible ? implicitHeight : 0
             onTriggered: Sync.sign_out()
         }
     }

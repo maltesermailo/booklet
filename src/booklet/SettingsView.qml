@@ -38,10 +38,12 @@ Popup {
     property var vaults: []
     property int category: 0
     property bool signedIn: false
+    property bool published: false
 
     // Opening the sign-in / clone dialogs, which live in Main.
     signal signInRequested()
     signal cloneRequested()
+    signal deleteVaultRequested(string name)
 
     readonly property var categories: ["Vaults", "Appearance", "Editor", "Sync", "About"]
 
@@ -53,6 +55,7 @@ Popup {
     function reload() {
         settings.vaults = JSON.parse(Library.vaults())
         settings.signedIn = Sync.is_signed_in()
+        settings.published = Sync.is_published()
         sizeSlider.value = Library.editor_font_size()
         scaleSlider.value = Library.ui_scale()
         densitySlider.value = Library.density()
@@ -63,6 +66,11 @@ Popup {
     Connections {
         target: Sync
         function onSigned_in(ok) { settings.signedIn = ok }
+        function onStatus_changed(payload) {
+            var status = JSON.parse(payload)
+            settings.signedIn = status.signed_in
+            settings.published = status.published
+        }
     }
 
     Connections {
@@ -527,14 +535,19 @@ Popup {
                         spacing: 10
 
                         TextButton {
-                            label: "Publish this vault"
-                            enabled: settings.signedIn
+                            label: settings.published ? "Published ✓" : "Publish this vault"
+                            enabled: settings.signedIn && !settings.published
                             onClicked: Sync.publish(settings.activeVaultName())
                         }
                         TextButton {
                             label: "Clone a server vault…"
                             enabled: settings.signedIn
                             onClicked: settings.cloneRequested()
+                        }
+                        TextButton {
+                            label: "Delete server vault…"
+                            visible: settings.published
+                            onClicked: settings.deleteVaultRequested(settings.activeVaultName())
                         }
                     }
                     Text {

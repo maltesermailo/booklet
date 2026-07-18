@@ -354,3 +354,5 @@ a.ghost:hover { border-color: var(--accent); text-decoration: none; }
 .plan .quota { color: var(--accent); margin: 8px 0 2px; }
 .plan .desc { color: var(--text-soft); margin: 4px 0 14px; min-height: 1.2em; }
 .plan .cta { margin-top: 12px; }
+
+.rowactions { display: flex; gap: 12px; align-items: center; }
