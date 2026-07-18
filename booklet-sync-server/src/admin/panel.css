@@ -181,8 +181,9 @@ button.link:hover { text-decoration: underline; }
 button.danger, .danger { background: var(--link); color: #1b1712; }
 a.danger { color: var(--link); background: none; }
 
-form.inline { display: flex; gap: 10px; align-items: center; }
-input[type="text"], input[type="password"] {
+form.inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+input[type="text"], input[type="password"], input[type="email"],
+input[type="number"], input[type="search"], input[type="url"] {
   font-family: var(--f-ui);
   font-size: 14px;
   background: var(--edit-bg);
@@ -208,25 +209,42 @@ label input { display: block; margin-top: 6px; width: 320px; max-width: 100%; }
   color: var(--text);
 }
 
-/* --- sign-in page --- */
+/* --- auth dialogs (sign-in, sign-up, forgot/reset) --- */
+/* Scoped to body.login so the overview's stat `.card`s are untouched; covers both
+   the form cards and the div result cards. */
 
-body.login { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
-.card.login, form.card {
-  width: 320px;
+body.login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+}
+body.login .card {
+  /* Reset the overview stat-card rule (`.card { flex: 1; display: flex }`), which
+     otherwise stretches this dialog to full width. */
+  flex: none;
+  display: block;
+  width: 360px;
+  max-width: 100%;
   background: var(--panel);
   border: 1px solid var(--page-line);
   border-radius: 12px;
   padding: 28px 26px 30px;
 }
-form.card h1 {
+body.login .card h1 {
   font-family: var(--f-display);
   font-weight: 500;
   color: var(--text-bright);
   text-align: center;
   margin: 0 0 18px;
 }
-form.card button { width: 100%; margin-top: 22px; padding: 9px; }
-form.card .aside { text-align: center; margin: 16px 0 0; font-size: 13px; }
+body.login .card label { margin-top: 16px; }
+body.login .card label:first-of-type { margin-top: 0; }
+body.login .card label input { width: 100%; }
+body.login .card button { width: 100%; margin-top: 22px; padding: 9px; }
+body.login .card p { color: var(--text-soft); text-align: center; }
+body.login .card .aside { margin: 16px 0 0; font-size: 13px; }
 .aside { color: var(--text-soft); }
 
 /* --- light theme (reference.html's light ground; night stays the default) --- */
