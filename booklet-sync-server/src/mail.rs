@@ -67,7 +67,7 @@ impl Mailer {
 
     /// Emails an invite link carrying the registration token.
     pub async fn send_invite(&self, to: &str, token: &str) -> Result<(), String> {
-        let link = format!("{}/register?invite={token}", self.public_url);
+        let link = format!("{}/signup?invite={token}", self.public_url);
         let body = format!("You've been invited to Booklet.\n\nCreate your account here:\n{link}\n");
 
         self.send(to, "You're invited to Booklet", body).await

@@ -1,36 +1,35 @@
-//! The localhost-only web admin panel: server-rendered HTML, cookie sessions,
-//! CSRF-guarded forms.
+//! The whole server-rendered web frontend: the public marketing site, the user
+//! account portal, and the operator admin area — all one app on one port.
 //!
-//! An admin session is a **separate credential from a device token** — a
-//! signed-in operator, not a synced laptop. It is checked by a different
-//! extractor against a different table ([`admin_sessions`]), and `serve` binds it
-//! to its own loopback listener. A `Bearer` device token can never open `/admin`;
-//! an admin cookie is not a `Bearer` token, so the sync API's `Device` extractor
-//! rejects it. Both facts are tested.
-//!
-//! The panel reads the whole box — users, devices, bytes, errors — but never note
-//! content. That line is what keeps it small.
+//! A **web session** cookie is a separate credential from a device token (a
+//! signed-in person on the website, not a synced laptop): it is resolved by a
+//! different extractor against a different table (`admin_sessions`), a `Bearer`
+//! device token can never present as a session, and a session cookie is not a
+//! `Bearer` token so the sync API's `Device` extractor rejects it. The operator
+//! area (`/admin`) additionally requires `is_admin`; the admin never reads note
+//! content.
 
 mod accounts;
 mod actions;
 mod pages;
 mod plans;
 mod session;
+mod site;
 mod view;
 
 use crate::auth;
 use crate::billing::Stripe;
 use crate::mail::Mailer;
-use crate::store::{AdminSession, Store};
-use axum::extract::FromRequestParts;
+use crate::store::{AdminSession, Store, WebSession};
+use axum::extract::{FromRef, FromRequestParts};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
-use axum::Router;
 use std::env;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+
+pub use site::routes;
 
 /// The session cookie's name and lifetime.
 const COOKIE: &str = "booklet_admin";
@@ -42,7 +41,7 @@ const TOKEN_TTL_SECONDS: i64 = 60 * 60;
 /// the sign-in rate limiter, and the optional email/billing integrations (each
 /// `None` when unconfigured — the panel degrades gracefully).
 #[derive(Clone)]
-pub struct AdminState {
+pub struct AppState {
     store: Arc<Store>,
     started: Instant,
     limiter: Arc<Mutex<session::Limiter>>,
@@ -51,7 +50,7 @@ pub struct AdminState {
     allow_registration: bool,
 }
 
-impl AdminState {
+impl AppState {
     /// A minimal state — no email, no billing, registration off. Used by tests.
     pub fn new(store: Arc<Store>, started: Instant) -> Self {
         Self {
@@ -71,61 +70,63 @@ impl AdminState {
         let mut state = Self::new(store, started);
         state.mailer = Arc::new(Mailer::from_env());
         state.stripe = Arc::new(Stripe::from_env(public_url));
-        state.allow_registration =
-            matches!(env::var("BOOKLET_ALLOW_REGISTRATION").as_deref(), Ok("1") | Ok("true"));
+        // Open by default — this is a public product site. An operator closes
+        // sign-up explicitly.
+        state.allow_registration = !matches!(env::var("BOOKLET_ALLOW_REGISTRATION").as_deref(), Ok("0") | Ok("false"));
         state
     }
 }
 
-/// Builds the `/admin` router. Serve it behind
-/// `into_make_service_with_connect_info::<SocketAddr>()` so the sign-in limiter
-/// can see the client address.
-pub fn router(state: AdminState) -> Router {
-    Router::new()
-        .route("/admin", get(pages::overview))
-        .route("/admin/login", get(session::login_form).post(session::login))
-        .route("/admin/logout", post(session::logout))
-        .route("/admin/theme", get(view::set_theme))
-        .route("/admin/users", get(pages::users).post(actions::create_user))
-        .route("/admin/users/{id}", get(pages::user_detail))
-        .route("/admin/users/{id}/disable", post(actions::disable_user))
-        .route("/admin/users/{id}/delete", get(pages::confirm_delete_user).post(actions::delete_user))
-        .route("/admin/users/{id}/quota", post(actions::set_quota))
-        .route("/admin/users/{id}/password", post(accounts::set_password))
-        .route("/admin/users/{id}/email", post(accounts::set_email))
-        .route("/admin/users/{id}/billing/checkout", post(actions::checkout))
-        .route("/admin/users/{id}/billing/portal", post(actions::portal))
-        .route("/admin/invites", post(accounts::send_invite))
-        .route("/admin/devices", get(pages::devices))
-        .route("/admin/devices/{id}/revoke", post(actions::revoke_device))
-        .route("/admin/vaults", get(pages::vaults))
-        .route("/admin/plans", get(plans::list).post(plans::create))
-        .route("/admin/plans/{name}/update", post(plans::update))
-        .route("/admin/plans/{name}/delete", post(plans::delete))
-        .route("/admin/log", get(pages::log))
-        // Public routes — no session (a stranger resets a password or registers).
-        .route("/admin/forgot", get(accounts::forgot_form).post(accounts::forgot))
-        .route("/admin/reset/{token}", get(accounts::reset_form).post(accounts::reset))
-        .route("/register", get(accounts::register_form).post(accounts::register))
-        .route("/billing/webhook", post(actions::stripe_webhook))
-        .route("/admin/assets/panel.css", get(view::stylesheet))
-        .route("/admin/assets/fonts/{file}", get(view::font))
-        .with_state(state)
+/// Lets the sync handlers keep `State<Arc<Store>>` while the whole app shares one
+/// `AppState`.
+impl FromRef<AppState> for Arc<Store> {
+    fn from_ref(state: &AppState) -> Self {
+        state.store.clone()
+    }
 }
 
-/// A live admin session, or a redirect to the sign-in page. Reads the session
-/// cookie and resolves it against the store, where an expired session or a
-/// no-longer-admin user reads as absent.
-impl FromRequestParts<AdminState> for AdminSession {
+/// Resolves the request's session cookie to a live web session, or `None`.
+async fn resolve_session(parts: &Parts, state: &AppState) -> Result<Option<WebSession>, Response> {
+    let Some(token) = cookie(&parts.headers, COOKIE) else {
+        return Ok(None);
+    };
+
+    state.store.web_session(&auth::token_hash(&token)).await.map_err(internal)
+}
+
+/// Any signed-in user (the portal). Absent session → redirect to sign-in.
+impl FromRequestParts<AppState> for WebSession {
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, state: &AdminState) -> Result<Self, Response> {
-        let token = cookie(&parts.headers, COOKIE).ok_or_else(to_login)?;
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        resolve_session(parts, state).await?.ok_or_else(to_login)
+    }
+}
 
-        match state.store.admin_session(&auth::token_hash(&token)).await {
-            Ok(Some(session)) => Ok(session),
-            Ok(None) => Err(to_login()),
-            Err(error) => Err(internal(error)),
+/// The session if there is one, or `None` — for public pages that render a
+/// "Log in" vs "Account" nav without forcing sign-in.
+pub struct MaybeSession(pub Option<WebSession>);
+
+impl FromRequestParts<AppState> for MaybeSession {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        Ok(MaybeSession(resolve_session(parts, state).await?))
+    }
+}
+
+/// A signed-in **admin** (the operator area). A signed-in non-admin is refused
+/// with 403; nobody signed in is sent to sign-in.
+impl FromRequestParts<AppState> for AdminSession {
+    type Rejection = Response;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Response> {
+        match resolve_session(parts, state).await? {
+            Some(session) if session.is_admin => {
+                Ok(AdminSession { user_id: session.user_id, handle: session.handle, csrf: session.csrf })
+            }
+            Some(_) => Err((StatusCode::FORBIDDEN, "Admins only").into_response()),
+            None => Err(to_login()),
         }
     }
 }
@@ -148,12 +149,12 @@ pub(crate) fn cookie(headers: &HeaderMap, name: &str) -> Option<String> {
 /// The rejection for a POST whose form CSRF token does not match the session's,
 /// or `None` when it matches — the synchronizer-token defence for this
 /// cookie-authenticated form surface.
-pub(crate) fn csrf_rejection(session: &AdminSession, provided: &str) -> Option<Response> {
-    (provided != session.csrf).then(|| (StatusCode::FORBIDDEN, "CSRF check failed").into_response())
+pub(crate) fn csrf_rejection(expected: &str, provided: &str) -> Option<Response> {
+    (provided != expected).then(|| (StatusCode::FORBIDDEN, "CSRF check failed").into_response())
 }
 
 fn to_login() -> Response {
-    Redirect::to("/admin/login").into_response()
+    Redirect::to("/login").into_response()
 }
 
 /// A server-side failure: logged, returned opaquely.
@@ -165,10 +166,12 @@ pub(crate) fn internal(error: impl std::fmt::Display) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{auth, http};
+    use crate::app::app;
+    use crate::auth;
     use axum::body::Body;
     use axum::http::header::{CONTENT_TYPE, SET_COOKIE};
     use axum::http::Request;
+    use axum::Router;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Instant;
@@ -181,8 +184,8 @@ mod tests {
         std::env::temp_dir().join(format!("booklet-admin-{}-{}", std::process::id(), unique))
     }
 
-    fn state(store: Arc<Store>) -> AdminState {
-        AdminState::new(store, Instant::now())
+    fn state(store: Arc<Store>) -> AppState {
+        AppState::new(store, Instant::now())
     }
 
     fn form(method: &str, uri: &str, cookie: Option<&str>, body: &str) -> Request<Body> {
@@ -209,82 +212,87 @@ mod tests {
 
         let response = app
             .clone()
-            .oneshot(form("POST", "/admin/login", None, &format!("handle={handle}&password=pw")))
+            .oneshot(form("POST", "/login", None, &format!("handle={handle}&password=pw")))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
 
         let set = response.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
         let token = set.split(';').next().unwrap().strip_prefix(&format!("{COOKIE}=")).unwrap().to_string();
-        let csrf = store.admin_session(&auth::token_hash(&token)).await.unwrap().unwrap().csrf;
+        let csrf = store.web_session(&auth::token_hash(&token)).await.unwrap().unwrap().csrf;
         (token, csrf)
     }
 
     #[sqlx::test]
-    async fn the_panel_redirects_to_login_when_unauthenticated(pool: sqlx::PgPool) {
-        let app = router(state(Arc::new(Store::from_parts(pool, blob_root(), 50))));
+    async fn the_admin_redirects_to_login_when_unauthenticated(pool: sqlx::PgPool) {
+        let app = app(state(Arc::new(Store::from_parts(pool, blob_root(), 50))));
 
         let response = app.oneshot(get("/admin", None)).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/admin/login");
+        assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/login");
     }
 
     #[sqlx::test]
-    async fn a_device_token_cannot_open_the_panel(pool: sqlx::PgPool) {
+    async fn a_device_token_cannot_open_the_admin(pool: sqlx::PgPool) {
         let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
         let user = store.create_user("alice", &auth::hash_password("pw").unwrap()).await.unwrap();
         let device_token = auth::new_token();
         store.create_device(user, "laptop", "macos", &auth::token_hash(&device_token)).await.unwrap();
-        let app = router(state(store));
+        let app = app(state(store));
 
-        // A live device token in the cookie slot is not an admin session.
+        // A live device token in the cookie slot is not a web session.
         let response = app.oneshot(get("/admin", Some(&device_token))).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/admin/login");
+        assert_eq!(response.headers().get(header::LOCATION).unwrap(), "/login");
     }
 
     #[sqlx::test]
-    async fn an_admin_cookie_cannot_reach_a_sync_route(pool: sqlx::PgPool) {
+    async fn a_session_cookie_cannot_reach_a_sync_route(pool: sqlx::PgPool) {
         let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
-        let admin_app = router(state(store.clone()));
-        let (token, _csrf) = sign_in_admin(&admin_app, &store, "alice").await;
+        let app = app(state(store.clone()));
+        let (token, _csrf) = sign_in_admin(&app, &store, "alice").await;
 
         // The same cookie, sent to the bearer-token sync API, authenticates nothing.
-        let sync_app = http::router(store);
         let request = Request::builder()
             .uri("/vaults")
             .header(header::COOKIE, format!("{COOKIE}={token}"))
             .body(Body::empty())
             .unwrap();
-        let response = sync_app.oneshot(request).await.unwrap();
+        let response = app.oneshot(request).await.unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[sqlx::test]
-    async fn only_an_admin_may_sign_in(pool: sqlx::PgPool) {
+    async fn a_non_admin_signs_in_but_cannot_reach_the_admin(pool: sqlx::PgPool) {
         let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
         store.create_user("bob", &auth::hash_password("pw").unwrap()).await.unwrap(); // not an admin
-        let app = router(state(store));
+        let app = app(state(store));
 
-        let response = app.oneshot(form("POST", "/admin/login", None, "handle=bob&password=pw")).await.unwrap();
+        // A normal user signs in fine (the portal is for everyone).
+        let signed_in = app.clone().oneshot(form("POST", "/login", None, "handle=bob&password=pw")).await.unwrap();
+        assert_eq!(signed_in.status(), StatusCode::SEE_OTHER);
+        let set = signed_in.headers().get(SET_COOKIE).unwrap().to_str().unwrap();
+        let token = set.split(';').next().unwrap().strip_prefix(&format!("{COOKIE}=")).unwrap().to_string();
 
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        // But the operator area refuses them.
+        let admin = app.oneshot(get("/admin", Some(&token))).await.unwrap();
+        assert_eq!(admin.status(), StatusCode::FORBIDDEN);
     }
 
     #[sqlx::test]
     async fn a_mutation_needs_a_matching_csrf_token_and_is_logged(pool: sqlx::PgPool) {
         let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
-        let app = router(state(store.clone()));
+        let app = app(state(store.clone()));
         let (token, csrf) = sign_in_admin(&app, &store, "alice").await;
 
         // A wrong CSRF token is refused, and no user is created.
         let body = "csrf=wrong&handle=carol&password=pw";
         let refused = app.clone().oneshot(form("POST", "/admin/users", Some(&token), body)).await.unwrap();
         assert_eq!(refused.status(), StatusCode::FORBIDDEN);
-        assert!(store.user_row(2).await.unwrap().is_none());
+        assert!(store.admin_login("carol").await.unwrap().is_none());
 
         // The matching token goes through and lands in the audit log.
         let body = format!("csrf={csrf}&handle=carol&password=pw");
@@ -297,39 +305,58 @@ mod tests {
     }
 
     #[sqlx::test]
-    async fn self_registration_is_gated_by_the_toggle(pool: sqlx::PgPool) {
+    async fn self_signup_is_gated_by_the_toggle(pool: sqlx::PgPool) {
         let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
 
-        // Off by default: registering creates nothing.
-        let closed = router(state(store.clone()));
-        let refused = closed.oneshot(form("POST", "/register", None, "handle=newbie&password=pw")).await.unwrap();
+        // Closed (the test state's default): signing up creates nothing.
+        let closed = app(state(store.clone()));
+        let refused = closed.oneshot(form("POST", "/signup", None, "handle=newbie&password=pw")).await.unwrap();
         assert_eq!(refused.status(), StatusCode::OK); // renders a "closed" card
         assert!(store.admin_login("newbie").await.unwrap().is_none());
 
-        // On: a public sign-up creates a non-admin account.
+        // Open: a public sign-up creates a non-admin account and logs it straight in.
         let mut open = state(store.clone());
         open.allow_registration = true;
-        let app = router(open);
-        let created = app.oneshot(form("POST", "/register", None, "handle=newbie&password=pw")).await.unwrap();
-        assert_eq!(created.status(), StatusCode::OK);
+        let app = app(open);
+        let created = app.oneshot(form("POST", "/signup", None, "handle=newbie&password=pw")).await.unwrap();
+        assert_eq!(created.status(), StatusCode::SEE_OTHER);
+        assert!(created.headers().get(SET_COOKIE).is_some(), "sign-up logs the new account in");
         let account = store.admin_login("newbie").await.unwrap().unwrap();
         assert!(!account.2, "self-registered users must not be admins");
     }
 
     #[sqlx::test]
+    async fn the_public_site_is_open_and_the_portal_needs_a_session(pool: sqlx::PgPool) {
+        let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
+        let app = app(state(store.clone()));
+
+        // The landing page is public.
+        assert_eq!(app.clone().oneshot(get("/", None)).await.unwrap().status(), StatusCode::OK);
+
+        // The account portal redirects a stranger to sign-in.
+        let anonymous = app.clone().oneshot(get("/account", None)).await.unwrap();
+        assert_eq!(anonymous.status(), StatusCode::SEE_OTHER);
+        assert_eq!(anonymous.headers().get(header::LOCATION).unwrap(), "/login");
+
+        // A signed-in user reaches it.
+        let (token, _csrf) = sign_in_admin(&app, &store, "alice").await;
+        assert_eq!(app.oneshot(get("/account", Some(&token))).await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[sqlx::test]
     async fn sign_in_is_rate_limited(pool: sqlx::PgPool) {
-        let app = router(state(Arc::new(Store::from_parts(pool, blob_root(), 50))));
+        let app = app(state(Arc::new(Store::from_parts(pool, blob_root(), 50))));
 
         // Ten wrong guesses are merely denied; the eleventh is throttled.
         for _ in 0..10 {
             let response = app
                 .clone()
-                .oneshot(form("POST", "/admin/login", None, "handle=alice&password=wrong"))
+                .oneshot(form("POST", "/login", None, "handle=alice&password=wrong"))
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
         }
-        let throttled = app.oneshot(form("POST", "/admin/login", None, "handle=alice&password=wrong")).await.unwrap();
+        let throttled = app.oneshot(form("POST", "/login", None, "handle=alice&password=wrong")).await.unwrap();
         assert_eq!(throttled.status(), StatusCode::TOO_MANY_REQUESTS);
     }
 }

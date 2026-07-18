@@ -5,31 +5,35 @@ The self-hosted sync server (see `design/sync-server.md`). Built in slices:
 - `src/blob.rs` — content-addressed, delta-chained blob store (no DB).
 - `src/store.rs` — the Postgres-backed storage layer over it.
 - `src/auth.rs` — argon2id passwords and device-token helpers.
-- `src/http.rs` — the axum router, handlers, and bearer-token auth boundary.
-- `src/admin/` — the localhost-only web admin panel (M7): cookie sessions,
-  CSRF-guarded forms, server-rendered HTML (maud), fonts served from the binary.
+- `src/http.rs` — the sync API's routes and bearer-token auth boundary.
+- `src/admin/` — the whole web frontend (maud): the public marketing site and
+  account portal (`src/admin/site.rs`), the operator admin, cookie web sessions,
+  CSRF-guarded forms, fonts served from the binary.
+- `src/app.rs` — merges the sync API and the web frontend into one app.
 - `src/main.rs` — the `serve` / `user create` / `admin grant` CLI.
 
 ## Running the server
+
+One app on one port serves the marketing site (`/`), the account portal
+(`/account`), the sync API (`/auth/token`, `/vaults/…`, `/blobs/…`), the operator
+admin (`/admin`), and the Stripe webhook (`/billing/webhook`). Put one HTTPS
+subdomain in front of it — see `DEPLOY.md`.
 
 Configuration is environment variables:
 
 - `DATABASE_URL` — Postgres connection string (required).
 - `BOOKLET_BLOB_DIR` — blob storage directory (default `data/blobs`).
-- `BOOKLET_BIND` — sync listen address (default `127.0.0.1:8080`; loopback, with
-  TLS terminated by a reverse proxy — this is the surface the world reaches).
-- `BOOKLET_ADMIN_BIND` — admin-panel address (default `127.0.0.1:8081`; loopback,
-  reached over an SSH tunnel — administration does not need the world, so
-  exposing it publicly is a deliberate change here).
+- `BOOKLET_BIND` — listen address (default `127.0.0.1:8080`; loopback, with TLS
+  terminated by a reverse proxy).
 
-Optional — each feature stays off until its variables are set, and the panel
+Optional — each feature stays off until its variables are set, and the site
 degrades gracefully without them:
 
-- `BOOKLET_PUBLIC_URL` — the panel's externally reachable base URL (default
-  `http://<admin-bind>`), used in email links and Stripe return URLs.
-- `BOOKLET_ALLOW_REGISTRATION` — `1`/`true` opens public self-registration at
-  `/register` (new accounts are non-admin).
-- Email (password-reset links at `/admin/forgot` and invites):
+- `BOOKLET_PUBLIC_URL` — the site's externally reachable base URL, used in email
+  links and Stripe return URLs.
+- `BOOKLET_ALLOW_REGISTRATION` — `0`/`false` closes the otherwise-open public
+  sign-up at `/signup` (new accounts are non-admin).
+- Email (password-reset links at `/forgot` and invites):
   - `BOOKLET_SMTP_HOST` — SMTP server hostname (required to enable email).
   - `BOOKLET_SMTP_PORT` — port (default 587 for STARTTLS, 465 for implicit TLS).
   - `BOOKLET_SMTP_USER`, `BOOKLET_SMTP_PASSWORD` — login, if the server needs one.
@@ -50,15 +54,18 @@ cargo run -p booklet-sync-server -- admin grant alice
 cargo run -p booklet-sync-server -- serve
 ```
 
-## Admin panel
+## Site, portal, and admin
 
-`serve` also starts the admin panel on `BOOKLET_ADMIN_BIND`. It is an operations
-surface — users, devices, bytes, and a log — and **never reads note content**.
-Reach it over an SSH tunnel (`ssh -L 8081:127.0.0.1:8081 the-box`) and sign in at
-`http://127.0.0.1:8081/admin` with an admin account's handle and password. An
-admin session is a separate credential from a device token (a signed-in operator,
-not a synced laptop): the panel's cookie cannot reach the sync API, and a device
-token cannot open `/admin`.
+The public site is at `/` (marketing, pricing, sign-up). A signed-in user manages
+their account and buys plans at `/account`. The operator admin — users, devices,
+bytes, plans, a log, and it **never reads note content** — is at `/admin`, open to
+any signed-in user whose account has `is_admin` (granted from the shell with
+`admin grant`).
+
+A web-session cookie is a separate credential from a device token: the session
+cookie cannot reach the bearer-token sync API, and a device token cannot present
+as a session. `/admin` additionally requires `is_admin`; a signed-in non-admin
+gets a 403 there.
 
 ## Quotas, billing, and accounts
 

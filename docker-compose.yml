@@ -1,9 +1,9 @@
-# Booklet sync server + its Postgres. Copy .env.example to .env and edit, then:
+# Booklet server + its Postgres. Copy .env.example to .env and edit, then:
 #   docker compose up -d --build
 #
-# Host ports are bound to 127.0.0.1 so nothing is exposed publicly by Docker
-# itself — Plesk's nginx reverse-proxies the sync port to the world, and the
-# admin port is reached over an SSH tunnel (see README/DEPLOY notes).
+# One app on one port (site + account portal + sync API + /admin). The host port
+# is bound to 127.0.0.1 so Docker exposes nothing publicly — Plesk's nginx
+# reverse-proxies your subdomain to it (see booklet-sync-server/DEPLOY.md).
 
 services:
   db:
@@ -27,7 +27,6 @@ services:
       # Inside the container we must bind 0.0.0.0 so Docker's port mapping can
       # reach the process; the host-side mapping below is what restricts exposure.
       BOOKLET_BIND: 0.0.0.0:8080
-      BOOKLET_ADMIN_BIND: 0.0.0.0:8081
       BOOKLET_PUBLIC_URL: ${BOOKLET_PUBLIC_URL}
       BOOKLET_BLOB_DIR: /data/blobs
       # Optional features — uncomment/set in .env to enable:
@@ -43,8 +42,7 @@ services:
     volumes:
       - blob-data:/data
     ports:
-      - "127.0.0.1:8080:8080"   # sync API — Plesk nginx proxies your domain here
-      - "127.0.0.1:8081:8081"   # admin panel — SSH tunnel only
+      - "127.0.0.1:8080:8080"   # the whole app — Plesk nginx proxies your domain here
     restart: unless-stopped
 
 volumes:

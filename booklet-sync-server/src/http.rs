@@ -10,10 +10,11 @@
 //! result to a status. Content is addressed by hash throughout — the delta store
 //! underneath is invisible here.
 
+use crate::admin::AppState;
 use crate::auth;
 use crate::store::{Error, PutOutcome, Store};
 use axum::body::Bytes;
-use axum::extract::{FromRequestParts, Path, Query, State};
+use axum::extract::{FromRef, FromRequestParts, Path, Query, State};
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -24,10 +25,10 @@ use serde::Deserialize;
 use sqlx::types::Uuid;
 use std::sync::Arc;
 
-type AppState = Arc<Store>;
-
-/// Builds the router over a shared store.
-pub fn router(store: Arc<Store>) -> Router {
+/// The sync API's routes, over the shared [`AppState`]. Handlers pull the store
+/// out via `State<Arc<Store>>` (a `FromRef` sub-state), so nothing here touches
+/// the web frontend's state.
+pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/auth/token", post(issue_token))
         .route("/vaults", get(list_vaults).post(publish_vault))
@@ -35,20 +36,25 @@ pub fn router(store: Arc<Store>) -> Router {
         .route("/vaults/{id}/entities/{*path}", put(put_entity).delete(delete_entity))
         .route("/vaults/{id}/history/{*path}", get(history))
         .route("/blobs/{hash}", put(put_blob).get(get_blob))
-        .with_state(store)
 }
 
 /// An authenticated device, extracted from the `Authorization: Bearer` token.
+/// Generic over the router state so it works both standalone and in the app.
 struct Device {
     user_id: i64,
     #[allow(dead_code)] // attributed to history rows in a later slice
     device_id: i64,
 }
 
-impl FromRequestParts<AppState> for Device {
+impl<S> FromRequestParts<S> for Device
+where
+    Arc<Store>: FromRef<S>,
+    S: Send + Sync,
+{
     type Rejection = Response;
 
-    async fn from_request_parts(parts: &mut Parts, store: &AppState) -> Result<Self, Response> {
+    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Response> {
+        let store = Arc::<Store>::from_ref(state);
         let token = parts
             .headers
             .get(header::AUTHORIZATION)
@@ -66,7 +72,7 @@ impl FromRequestParts<AppState> for Device {
 
 // --- auth ---
 
-async fn issue_token(State(store): State<AppState>, Json(request): Json<proto::TokenRequest>) -> Response {
+async fn issue_token(State(store): State<Arc<Store>>, Json(request): Json<proto::TokenRequest>) -> Response {
     let user = match store.find_user_by_handle(&request.handle).await {
         Ok(Some(user)) => user,
         Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
@@ -91,7 +97,7 @@ async fn issue_token(State(store): State<AppState>, Json(request): Json<proto::T
 
 // --- vaults ---
 
-async fn list_vaults(State(store): State<AppState>, device: Device) -> Response {
+async fn list_vaults(State(store): State<Arc<Store>>, device: Device) -> Response {
     match store.list_vaults(device.user_id).await {
         Ok(vaults) => Json(vaults).into_response(),
         Err(error) => internal(error),
@@ -99,7 +105,7 @@ async fn list_vaults(State(store): State<AppState>, device: Device) -> Response 
 }
 
 async fn publish_vault(
-    State(store): State<AppState>,
+    State(store): State<Arc<Store>>,
     device: Device,
     Json(request): Json<proto::PublishRequest>,
 ) -> Response {
@@ -116,7 +122,7 @@ struct ChangesQuery {
 }
 
 async fn changes(
-    State(store): State<AppState>,
+    State(store): State<Arc<Store>>,
     device: Device,
     Path(id): Path<String>,
     Query(query): Query<ChangesQuery>,
@@ -133,7 +139,7 @@ async fn changes(
 }
 
 async fn put_entity(
-    State(store): State<AppState>,
+    State(store): State<Arc<Store>>,
     device: Device,
     Path((id, path)): Path<(String, String)>,
     Json(request): Json<proto::PutRequest>,
@@ -165,7 +171,7 @@ struct DeleteQuery {
 }
 
 async fn delete_entity(
-    State(store): State<AppState>,
+    State(store): State<Arc<Store>>,
     device: Device,
     Path((id, path)): Path<(String, String)>,
     Query(query): Query<DeleteQuery>,
@@ -179,7 +185,7 @@ async fn delete_entity(
 }
 
 async fn history(
-    State(store): State<AppState>,
+    State(store): State<Arc<Store>>,
     device: Device,
     Path((id, path)): Path<(String, String)>,
 ) -> Response {
@@ -197,7 +203,7 @@ async fn history(
 // --- blobs (global, authenticated but not vault-scoped) ---
 
 async fn put_blob(
-    State(store): State<AppState>,
+    State(store): State<Arc<Store>>,
     _device: Device,
     Path(hash): Path<String>,
     body: Bytes,
@@ -214,7 +220,7 @@ async fn put_blob(
     }
 }
 
-async fn get_blob(State(store): State<AppState>, _device: Device, Path(hash): Path<String>) -> Response {
+async fn get_blob(State(store): State<Arc<Store>>, _device: Device, Path(hash): Path<String>) -> Response {
     match store.has_blob(&hash).await {
         Ok(true) => match store.get_blob(&hash).await {
             Ok(bytes) => bytes.into_response(),
@@ -260,10 +266,12 @@ fn internal(error: impl std::fmt::Display) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::app;
     use axum::body::Body;
     use axum::http::Request;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::Instant;
     use tower::ServiceExt;
 
     static COUNTER: AtomicUsize = AtomicUsize::new(0);
@@ -271,6 +279,11 @@ mod tests {
     fn blob_root() -> PathBuf {
         let unique = COUNTER.fetch_add(1, Ordering::Relaxed);
         std::env::temp_dir().join(format!("booklet-http-{}-{}", std::process::id(), unique))
+    }
+
+    /// The full app over a store, for driving the sync routes in a test.
+    fn app_for(store: Arc<Store>) -> Router {
+        app(AppState::new(store, Instant::now()))
     }
 
     async fn json<T: serde::de::DeserializeOwned>(response: Response) -> T {
@@ -298,7 +311,7 @@ mod tests {
 
     #[sqlx::test]
     async fn requests_without_a_valid_token_are_rejected(pool: sqlx::PgPool) {
-        let app = router(Arc::new(Store::from_parts(pool, blob_root(), 50)));
+        let app = app_for(Arc::new(Store::from_parts(pool, blob_root(), 50)));
 
         let anonymous = app
             .clone()
@@ -315,7 +328,7 @@ mod tests {
     async fn a_device_signs_in_publishes_and_syncs_a_note(pool: sqlx::PgPool) {
         let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
         store.create_user("alice", &auth::hash_password("secret").unwrap()).await.unwrap();
-        let app = router(store);
+        let app = app_for(store);
 
         // Sign in for a token.
         let request = proto::TokenRequest {
@@ -382,7 +395,7 @@ mod tests {
         let store = Arc::new(Store::from_parts(pool, blob_root(), 50));
         let user = store.create_user("alice", &auth::hash_password("secret").unwrap()).await.unwrap();
         store.set_quota(user, Some(5)).await.unwrap(); // 5 bytes — anything real overflows it
-        let app = router(store);
+        let app = app_for(store);
 
         let sign_in = proto::TokenRequest {
             handle: "alice".into(),
@@ -431,7 +444,7 @@ mod tests {
         let alice = store.create_user("alice", &auth::hash_password("a").unwrap()).await.unwrap();
         let alice_vault = store.create_vault(alice, "Personal").await.unwrap();
         store.create_user("bob", &auth::hash_password("b").unwrap()).await.unwrap();
-        let app = router(store);
+        let app = app_for(store);
 
         let sign_in = proto::TokenRequest {
             handle: "bob".into(),

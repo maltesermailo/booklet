@@ -500,21 +500,18 @@ impl Store {
         Ok(())
     }
 
-    /// The live session for a token hash: present only if unexpired and its user
-    /// is still an admin and not disabled, so a revoked admin's cookie dies at
-    /// once. Returns the operator's handle and this session's CSRF token.
-    pub async fn admin_session(&self, token_hash: &str) -> Result<Option<AdminSession>> {
-        let row: Option<(i64, String, String)> = sqlx::query_as(
-            "SELECT s.user_id, u.handle, s.csrf
+    /// The live web session for a token hash: present only if unexpired and its
+    /// user is not disabled, so a disabled user's cookie dies at once. Carries
+    /// `is_admin` so the admin extractor can gate operator routes.
+    pub async fn web_session(&self, token_hash: &str) -> Result<Option<WebSession>> {
+        Ok(sqlx::query_as(
+            "SELECT s.user_id, u.handle, s.csrf, u.is_admin
                FROM admin_sessions s JOIN users u ON u.id = s.user_id
-              WHERE s.token_hash = $1 AND s.expires_at > now()
-                AND u.is_admin AND NOT u.disabled",
+              WHERE s.token_hash = $1 AND s.expires_at > now() AND NOT u.disabled",
         )
         .bind(token_hash)
         .fetch_optional(&self.pool)
-        .await?;
-
-        Ok(row.map(|(user_id, handle, csrf)| AdminSession { user_id, handle, csrf }))
+        .await?)
     }
 
     /// Ends a session (logout), or clears one already gone.
@@ -801,10 +798,12 @@ impl Store {
 
     // --- plans (operator-managed) ---
 
-    /// Every plan with a count of the users on it, for the Plans page.
+    /// Every plan with a count of the users on it, for the Plans page and the
+    /// public pricing page, cheapest first.
     pub async fn list_plans(&self) -> Result<Vec<PlanRow>> {
         Ok(sqlx::query_as(
-            "SELECT p.name, p.quota_bytes, p.stripe_price_id, count(u.id) AS users
+            "SELECT p.name, p.quota_bytes, p.stripe_price_id, p.price_cents, p.description,
+                    count(u.id) AS users
                FROM plans p LEFT JOIN users u ON u.plan = p.name
               GROUP BY p.name ORDER BY p.quota_bytes",
         )
@@ -812,23 +811,33 @@ impl Store {
         .await?)
     }
 
-    pub async fn create_plan(&self, name: &str, quota_bytes: i64, price: Option<&str>) -> Result<()> {
-        sqlx::query("INSERT INTO plans (name, quota_bytes, stripe_price_id) VALUES ($1, $2, $3)")
-            .bind(name)
-            .bind(quota_bytes)
-            .bind(price)
-            .execute(&self.pool)
-            .await?;
+    pub async fn create_plan(&self, plan: NewPlan<'_>) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO plans (name, quota_bytes, stripe_price_id, price_cents, description)
+             VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(plan.name)
+        .bind(plan.quota_bytes)
+        .bind(plan.stripe_price_id)
+        .bind(plan.price_cents)
+        .bind(plan.description)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
-    pub async fn update_plan(&self, name: &str, quota_bytes: i64, price: Option<&str>) -> Result<()> {
-        sqlx::query("UPDATE plans SET quota_bytes = $2, stripe_price_id = $3 WHERE name = $1")
-            .bind(name)
-            .bind(quota_bytes)
-            .bind(price)
-            .execute(&self.pool)
-            .await?;
+    pub async fn update_plan(&self, name: &str, plan: NewPlan<'_>) -> Result<()> {
+        sqlx::query(
+            "UPDATE plans SET quota_bytes = $2, stripe_price_id = $3, price_cents = $4, description = $5
+              WHERE name = $1",
+        )
+        .bind(name)
+        .bind(plan.quota_bytes)
+        .bind(plan.stripe_price_id)
+        .bind(plan.price_cents)
+        .bind(plan.description)
+        .execute(&self.pool)
+        .await?;
         Ok(())
     }
 
@@ -1104,13 +1113,25 @@ pub struct Point {
     pub value: i64,
 }
 
-/// A plan row for the Plans page, with a count of the users on it.
+/// A plan row for the Plans page and the pricing page, with a count of the users
+/// on it.
 #[derive(sqlx::FromRow)]
 pub struct PlanRow {
     pub name: String,
     pub quota_bytes: i64,
     pub stripe_price_id: Option<String>,
+    pub price_cents: Option<i32>,
+    pub description: Option<String>,
     pub users: i64,
+}
+
+/// The fields of a plan an operator sets when creating or editing one.
+pub struct NewPlan<'a> {
+    pub name: &'a str,
+    pub quota_bytes: i64,
+    pub stripe_price_id: Option<&'a str>,
+    pub price_cents: Option<i32>,
+    pub description: Option<&'a str>,
 }
 
 /// The nine columns every user row carries; `list_users` and `user_row` share it.
@@ -1141,7 +1162,18 @@ fn disk_free_bytes(root: &std::path::Path) -> u64 {
     stat.f_bavail as u64 * stat.f_frsize as u64
 }
 
-/// A live admin session, resolved from the request cookie.
+/// A live web session, resolved from the request cookie. `is_admin` decides
+/// whether the operator area is reachable.
+#[derive(sqlx::FromRow, Clone)]
+pub struct WebSession {
+    pub user_id: i64,
+    pub handle: String,
+    pub csrf: String,
+    pub is_admin: bool,
+}
+
+/// A live session known to belong to an admin, produced by the admin extractor.
+/// The operator handlers take this so their access is typed, not conventional.
 pub struct AdminSession {
     pub user_id: i64,
     pub handle: String,
@@ -1715,7 +1747,16 @@ mod tests {
         // A seeded plan resolves the quota; a per-user override still wins.
         assert_eq!(store.user_effective_quota(user).await.unwrap(), Some(1024 * 1024 * 1024)); // free = 1 GiB
 
-        store.create_plan("team", 5_000, Some("price_123")).await.unwrap();
+        store
+            .create_plan(NewPlan {
+                name: "team",
+                quota_bytes: 5_000,
+                stripe_price_id: Some("price_123"),
+                price_cents: Some(500),
+                description: None,
+            })
+            .await
+            .unwrap();
         store.set_plan(user, "team").await.unwrap();
         assert_eq!(store.user_effective_quota(user).await.unwrap(), Some(5_000));
         assert_eq!(store.plan_price("team").await.unwrap().as_deref(), Some("price_123"));

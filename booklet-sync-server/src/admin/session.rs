@@ -1,9 +1,9 @@
 //! Sign-in, sign-out, and the in-memory sign-in rate limiter.
 
 use super::view::Theme;
-use super::{cookie, csrf_rejection, internal, view, AdminState, COOKIE, SESSION_TTL_SECONDS};
+use super::{cookie, csrf_rejection, internal, view, AppState, COOKIE, SESSION_TTL_SECONDS};
 use crate::auth;
-use crate::store::AdminSession;
+use crate::store::WebSession;
 use axum::extract::{ConnectInfo, FromRequestParts, State};
 use axum::http::request::Parts;
 use axum::http::{header, HeaderMap, StatusCode};
@@ -69,7 +69,7 @@ pub struct LoginForm {
 }
 
 pub async fn login(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     ClientIp(ip): ClientIp,
     Theme(theme): Theme,
     Form(form): Form<LoginForm>,
@@ -84,38 +84,50 @@ pub async fn login(
         Ok(None) => return denied(theme),
         Err(error) => return internal(error),
     };
-    let (id, password_hash, is_admin, disabled) = account;
+    let (id, password_hash, _is_admin, disabled) = account;
 
     // One generic failure for every reason, so the form never reveals whether a
-    // handle exists or holds admin. Only an admin may sign in here.
-    if disabled || !is_admin || !auth::verify_password(&form.password, &password_hash) {
+    // handle exists. Any non-disabled user may sign in; the operator gate lives
+    // on the /admin routes, not here.
+    if disabled || !auth::verify_password(&form.password, &password_hash) {
         return denied(theme);
     }
 
-    let token = auth::new_token();
-    let csrf = auth::new_token();
-    if let Err(error) =
-        state.store.create_admin_session(id, &auth::token_hash(&token), &csrf, SESSION_TTL_SECONDS).await
-    {
-        return internal(error);
-    }
+    let cookie = match open_session(&state, id).await {
+        Ok(cookie) => cookie,
+        Err(response) => return response,
+    };
     let _ = state.store.log_event(&form.handle, "sign-in", "").await;
 
-    ([(header::SET_COOKIE, session_cookie(&token))], Redirect::to("/admin")).into_response()
+    ([(header::SET_COOKIE, cookie)], Redirect::to("/account")).into_response()
+}
+
+/// Creates a session row and returns the `Set-Cookie` value for it. Shared by
+/// sign-in and sign-up (which logs a new account straight in).
+pub(super) async fn open_session(state: &AppState, user_id: i64) -> Result<String, Response> {
+    let token = auth::new_token();
+    let csrf = auth::new_token();
+    state
+        .store
+        .create_admin_session(user_id, &auth::token_hash(&token), &csrf, SESSION_TTL_SECONDS)
+        .await
+        .map_err(internal)?;
+
+    Ok(session_cookie(&token))
 }
 
 #[derive(Deserialize)]
 pub struct CsrfForm {
-    csrf: String,
+    pub(super) csrf: String,
 }
 
 pub async fn logout(
-    State(state): State<AdminState>,
-    session: AdminSession,
+    State(state): State<AppState>,
+    session: WebSession,
     headers: HeaderMap,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -124,17 +136,19 @@ pub async fn logout(
     }
     let _ = state.store.log_event(&session.handle, "sign-out", "").await;
 
-    ([(header::SET_COOKIE, clear_cookie())], Redirect::to("/admin/login")).into_response()
+    ([(header::SET_COOKIE, clear_cookie())], Redirect::to("/login")).into_response()
 }
 
 fn denied(theme: &str) -> Response {
     (StatusCode::UNAUTHORIZED, view::login_page(theme, Some("Invalid handle or password."))).into_response()
 }
 
+// SameSite=Lax (not Strict) so the session survives the top-level redirect back
+// from Stripe Checkout; POST forms are still protected by the CSRF token.
 fn session_cookie(token: &str) -> String {
-    format!("{COOKIE}={token}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={SESSION_TTL_SECONDS}")
+    format!("{COOKIE}={token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age={SESSION_TTL_SECONDS}")
 }
 
 fn clear_cookie() -> String {
-    format!("{COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0")
+    format!("{COOKIE}=; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=0")
 }

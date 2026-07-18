@@ -5,25 +5,23 @@
 //!
 //! - `DATABASE_URL` — Postgres connection string (required).
 //! - `BOOKLET_BLOB_DIR` — where blobs live on disk (default `data/blobs`).
-//! - `BOOKLET_BIND` — sync address to listen on (default `127.0.0.1:8080`;
-//!   loopback, with TLS terminated by a reverse proxy — the world reaches this).
-//! - `BOOKLET_ADMIN_BIND` — admin-panel address (default `127.0.0.1:8081`;
-//!   loopback, reached over an SSH tunnel — administration does not need the
-//!   world, so exposing it publicly is a deliberate change here).
+//! - `BOOKLET_BIND` — address to listen on (default `127.0.0.1:8080`; loopback,
+//!   with TLS terminated by a reverse proxy). One listener serves the sync API and
+//!   the whole web frontend (site, account portal, `/admin`).
 //!
 //! Optional (each feature stays off until its vars are set):
-//! - `BOOKLET_PUBLIC_URL` — the panel's externally reachable base URL, used in
-//!   email links and Stripe return URLs (default `http://<admin-bind>`).
-//! - `BOOKLET_ALLOW_REGISTRATION` — `1`/`true` to open public self-registration.
+//! - `BOOKLET_PUBLIC_URL` — the site's externally reachable base URL, used in
+//!   email links and Stripe return URLs (default `http://<bind>`).
+//! - `BOOKLET_ALLOW_REGISTRATION` — `0`/`false` to CLOSE the otherwise-open public
+//!   sign-up.
 //! - Email (reset links, invites): `BOOKLET_SMTP_HOST` (required to enable) plus
 //!   `BOOKLET_SMTP_PORT`, `BOOKLET_SMTP_USER`, `BOOKLET_SMTP_PASSWORD`,
 //!   `BOOKLET_SMTP_TLS` (`starttls`/`implicit`/`none`), and `BOOKLET_MAIL_FROM`.
 //! - Billing: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`. Plans (their quota and
 //!   Stripe price) are created and edited on the admin Plans page, not via env.
 
-use booklet_sync_server::{admin, auth, http, store::Store};
+use booklet_sync_server::{admin, app, auth, store::Store};
 use std::env;
-use std::future::IntoFuture;
 use std::io::{BufRead, IsTerminal};
 use std::net::SocketAddr;
 use std::process::ExitCode;
@@ -59,43 +57,30 @@ async fn serve() -> ExitCode {
     };
     let started = Instant::now();
 
-    let sync_bind = env::var("BOOKLET_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
-    let admin_bind = env::var("BOOKLET_ADMIN_BIND").unwrap_or_else(|_| "127.0.0.1:8081".into());
-
-    let sync_listener = match bind(&sync_bind).await {
+    let bind = env::var("BOOKLET_BIND").unwrap_or_else(|_| "127.0.0.1:8080".into());
+    let listener = match tokio::net::TcpListener::bind(&bind).await {
         Ok(listener) => listener,
-        Err(code) => return code,
-    };
-    let admin_listener = match bind(&admin_bind).await {
-        Ok(listener) => listener,
-        Err(code) => return code,
+        Err(error) => {
+            eprintln!("could not bind {bind}: {error}");
+            return ExitCode::FAILURE;
+        }
     };
 
-    let public_url = env::var("BOOKLET_PUBLIC_URL").unwrap_or_else(|_| format!("http://{admin_bind}"));
+    let public_url = env::var("BOOKLET_PUBLIC_URL").unwrap_or_else(|_| format!("http://{bind}"));
 
-    println!("booklet-sync-server: sync on {sync_bind}, admin on {admin_bind}");
+    println!("booklet-sync-server listening on {bind}");
 
-    // Two listeners on two loopback ports: sync is the surface a reverse proxy
-    // exposes to the world; admin stays behind an SSH tunnel. The connect-info
-    // service lets the admin sign-in limiter see the client address.
-    let sync = axum::serve(sync_listener, http::router(store.clone())).into_future();
-    let admin_state = admin::AdminState::from_env(store, started, &public_url);
-    let admin_service = admin::router(admin_state).into_make_service_with_connect_info::<SocketAddr>();
-    let admin = axum::serve(admin_listener, admin_service).into_future();
-
-    if let Err(error) = tokio::try_join!(sync, admin) {
+    // One app on one listener: the sync API and the whole web frontend (site,
+    // account portal, operator admin at /admin). The connect-info service lets the
+    // sign-in limiter see the client address.
+    let state = admin::AppState::from_env(store, started, &public_url);
+    let service = app::app(state).into_make_service_with_connect_info::<SocketAddr>();
+    if let Err(error) = axum::serve(listener, service).await {
         eprintln!("server stopped: {error}");
         return ExitCode::FAILURE;
     }
 
     ExitCode::SUCCESS
-}
-
-async fn bind(addr: &str) -> Result<tokio::net::TcpListener, ExitCode> {
-    tokio::net::TcpListener::bind(addr).await.map_err(|error| {
-        eprintln!("could not bind {addr}: {error}");
-        ExitCode::FAILURE
-    })
 }
 
 /// Grants admin to an existing user — how the first operator is bootstrapped,

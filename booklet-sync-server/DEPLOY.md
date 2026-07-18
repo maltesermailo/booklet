@@ -1,47 +1,49 @@
-# Deploying the sync server on Plesk with Docker
+# Deploying Booklet on Plesk with Docker
 
-The server is one small binary plus a Postgres database. It listens on **two**
-ports:
+The server is one binary plus a Postgres database. It serves **everything on one
+port** (default `8080`): the public marketing site (`/`), the user account portal
+(`/account`), the sync API (`/auth/token`, `/vaults/…`, `/blobs/…`), the operator
+admin (`/admin`), and the Stripe webhook (`/billing/webhook`). You put one
+subdomain in front of it with HTTPS.
 
-- **8080 — the sync API.** This is what your Booklet clients talk to; it needs to
-  reach the world, behind HTTPS.
-- **8081 — the admin panel.** An operations surface (users, devices, bytes, plans,
-  a log). It must **not** be public by default — reach it over an SSH tunnel.
-
-The `docker-compose.yml` binds both host ports to `127.0.0.1`, so Docker never
-exposes them on a public interface. Plesk's nginx reverse-proxies the sync port
-to your domain; the admin port stays on loopback.
+`docker-compose.yml` binds the host port to `127.0.0.1`, so Docker exposes nothing
+publicly — Plesk's nginx reverse-proxies your subdomain to it.
 
 ## 1. Build and run
 
-Over SSH on the Plesk box (Docker + the Docker Compose plugin installed — Plesk's
-**Docker** extension provides them, or `apt install docker-compose-plugin`):
+Over SSH on the Plesk box (Docker + the Compose plugin — Plesk's **Docker**
+extension provides them, or `apt install docker-compose-plugin`):
 
 ```sh
 git clone <your repo> booklet && cd booklet
 cp .env.example .env
-# edit .env: set POSTGRES_PASSWORD and BOOKLET_PUBLIC_URL
+# edit .env: POSTGRES_PASSWORD, and BOOKLET_PUBLIC_URL = https://booklet.yourdomain.com
 docker compose up -d --build
-docker compose logs -f server        # should print "sync on 0.0.0.0:8080, admin on 0.0.0.0:8081"
+docker compose logs -f server        # should print "listening on 0.0.0.0:8080"
 ```
 
-The image builds only the server crate (the QtQuick app is not built). Postgres
-data and the content-addressed blob store live in named volumes (`db-data`,
-`blob-data`) and survive a container replace.
+Postgres data and the content-addressed blob store live in named volumes and
+survive a container replace. Migrations run automatically on start.
 
-## 2. Create the first admin (from the shell — nobody can sign in to make one)
+## 2. Create the first operator (from the shell)
+
+Public sign-up creates ordinary users; an **operator** (admin) is made from the
+shell, because nobody can sign in to grant the first one:
 
 ```sh
-docker compose exec server booklet-sync-server user create alice     # prompts for a password
+docker compose exec server booklet-sync-server user create alice   # prompts for a password
 docker compose exec server booklet-sync-server admin grant alice
 ```
 
-## 3. Reverse-proxy the sync API (public, HTTPS)
+Everyone else just signs up at `https://booklet.yourdomain.com/signup`.
 
-In Plesk, create a domain or subdomain for sync, e.g. **`sync.yourdomain.com`**,
-and issue a **Let's Encrypt** certificate for it (SSL/TLS Certificates). Then:
+## 3. Reverse-proxy the subdomain (HTTPS)
 
-**Plesk → Domains → sync.yourdomain.com → Apache & nginx Settings →
+In Plesk, create the subdomain **`booklet.yourdomain.com`** and issue a
+**Let's Encrypt** certificate for it (SSL/TLS Certificates — required, because the
+session cookie is `Secure`). Then:
+
+**Plesk → Domains → booklet.yourdomain.com → Apache & nginx Settings →
 Additional nginx directives:**
 
 ```nginx
@@ -56,71 +58,36 @@ location / {
 }
 ```
 
-Point your Booklet clients' server URL at `https://sync.yourdomain.com`. TLS
-terminates here at nginx; the server behind it speaks plain HTTP on loopback,
-exactly as designed.
+That's it — the whole app is now at `https://booklet.yourdomain.com`:
+
+- Marketing + pricing + sign-up: `/`, `/pricing`, `/signup`
+- Account portal (usage, buy a plan): `/account`
+- Operator admin (login + admin account): `/admin`
+- Stripe webhook: `/billing/webhook`
+
+Point your Booklet clients' server URL at `https://booklet.yourdomain.com`. TLS
+terminates at nginx; the server behind it speaks plain HTTP on loopback.
 
 > If Plesk reports a *duplicate `location /`*, the domain is also serving static
-> files. Fix: **Apache & nginx Settings → uncheck "Serve static files directly by
-> nginx"**, or use the Plesk **Docker** extension's *Proxy Rules* instead (map the
-> domain to the server container's port 8080 — the extension writes the nginx
-> location for you).
+> files: **uncheck "Serve static files directly by nginx"** in the same settings
+> page, or use the Plesk **Docker** extension's *Proxy Rules* (map the domain to
+> the container's port 8080 and Plesk writes the location for you).
 
-## 4. Reach the admin panel
+## 4. Billing (optional, Stripe)
 
-### Recommended: SSH tunnel (nothing public)
+Set `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET` in `.env` and
+`docker compose up -d`. Create your plans on **`/admin/plans`** (each a quota, a
+shown price, and a Stripe **price id**). Point the Stripe webhook at
+`https://booklet.yourdomain.com/billing/webhook`. Users then subscribe themselves
+from `/pricing` or `/account` — they pay on Stripe's hosted checkout; we never
+touch card data. Verifying end to end needs a real Stripe test key and webhook
+forwarding (e.g. the Stripe CLI).
 
-From your laptop:
+## 5. Email (optional, SMTP)
 
-```sh
-ssh -L 8081:127.0.0.1:8081 you@yourserver
-```
-
-Then open **http://127.0.0.1:8081/admin** and sign in. Leave `BOOKLET_PUBLIC_URL`
-as `http://127.0.0.1:8081` for this mode. A device token can't open `/admin` and
-the admin cookie can't reach the sync API — the two credentials are separate.
-
-### Optional: reverse-proxy admin on its own subdomain
-
-Only if you accept the trade (an admin login exposed to the internet). Requirements:
-
-1. A dedicated subdomain, e.g. **`admin.yourdomain.com`**, with **Let's Encrypt SSL**
-   — the session cookie is `Secure`, so it is only sent over HTTPS.
-2. Set **`BOOKLET_PUBLIC_URL=https://admin.yourdomain.com`** in `.env` and
-   `docker compose up -d` again (so links/return-URLs are correct).
-3. Lock it down. **Apache & nginx Settings → Additional nginx directives:**
-
-```nginx
-location / {
-    allow 203.0.113.7;      # your fixed IP(s)
-    deny  all;              # everyone else is refused before reaching the app
-    proxy_pass http://127.0.0.1:8081;
-    proxy_http_version 1.1;
-    proxy_set_header Host              $host;
-    proxy_set_header X-Real-IP         $remote_addr;
-    proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
-
-The panel already rate-limits sign-in and uses CSRF-protected forms, but an IP
-allowlist (or Plesk's HTTP Basic auth in front) is strongly advised.
-
-## 5. Billing webhook (only if you enable Stripe)
-
-`POST /billing/webhook` lives on the **admin** listener (8081). If admin is
-loopback-only but you use billing, expose just that one path on the public sync
-domain — add to **sync.yourdomain.com**'s nginx directives:
-
-```nginx
-location = /billing/webhook {
-    proxy_pass http://127.0.0.1:8081;
-    proxy_set_header Host $host;
-}
-```
-
-Then point the Stripe webhook at `https://sync.yourdomain.com/billing/webhook`.
-It is authenticated by the Stripe signature, so exposing only this path is safe.
+Set `BOOKLET_SMTP_HOST` (and `_PORT`/`_USER`/`_PASSWORD`/`_TLS`) plus
+`BOOKLET_MAIL_FROM` to enable password-reset links (`/forgot`) and operator
+invites. Without it, an operator sets passwords directly from `/admin`.
 
 ## 6. Updating
 

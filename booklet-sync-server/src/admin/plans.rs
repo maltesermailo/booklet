@@ -4,7 +4,7 @@
 
 use super::actions::parse_gib;
 use super::view::{self, Theme};
-use super::{csrf_rejection, internal, AdminState};
+use super::{csrf_rejection, internal, AppState};
 use crate::store::{self, AdminSession, PlanRow};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -15,7 +15,7 @@ use serde::Deserialize;
 
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-pub async fn list(State(state): State<AdminState>, session: AdminSession, Theme(theme): Theme) -> Response {
+pub async fn list(State(state): State<AppState>, session: AdminSession, Theme(theme): Theme) -> Response {
     let plans = match state.store.list_plans().await {
         Ok(plans) => plans,
         Err(error) => return internal(error),
@@ -35,7 +35,9 @@ fn body(session: &AdminSession, plans: &[PlanRow], error: Option<&str>) -> Marku
                 input type="hidden" name="csrf" value=(session.csrf);
                 input type="text" name="name" placeholder="name (e.g. team)" required;
                 input type="number" name="quota_gib" min="0" step="0.1" placeholder="quota GiB" required;
-                input type="text" name="stripe_price_id" placeholder="stripe price id (optional)";
+                input type="number" name="price" min="0" step="0.01" placeholder="price $/mo";
+                input type="text" name="description" placeholder="description";
+                input type="text" name="stripe_price_id" placeholder="stripe price id";
                 button type="submit" { "Create" }
             }
         }
@@ -51,6 +53,10 @@ fn body(session: &AdminSession, plans: &[PlanRow], error: Option<&str>) -> Marku
                                 form.inline method="post" action=(format!("/admin/plans/{}/update", plan.name)) {
                                     input type="hidden" name="csrf" value=(session.csrf);
                                     input type="number" name="quota_gib" min="0" step="0.1" value=(gib(plan.quota_bytes));
+                                    input type="number" name="price" min="0" step="0.01"
+                                          value=(plan.price_cents.map(dollars).unwrap_or_default()) placeholder="$/mo";
+                                    input type="text" name="description"
+                                          value=(plan.description.clone().unwrap_or_default()) placeholder="description";
                                     input type="text" name="stripe_price_id"
                                           value=(plan.stripe_price_id.clone().unwrap_or_default())
                                           placeholder="stripe price id";
@@ -77,16 +83,21 @@ fn body(session: &AdminSession, plans: &[PlanRow], error: Option<&str>) -> Marku
 }
 
 #[derive(Deserialize)]
-pub struct CreatePlanForm {
+pub struct PlanForm {
     csrf: String,
+    #[serde(default)]
     name: String,
     quota_gib: String,
+    #[serde(default)]
+    price: String,
+    #[serde(default)]
+    description: String,
     #[serde(default)]
     stripe_price_id: String,
 }
 
-pub async fn create(State(state): State<AdminState>, session: AdminSession, Form(form): Form<CreatePlanForm>) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+pub async fn create(State(state): State<AppState>, session: AdminSession, Form(form): Form<PlanForm>) -> Response {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -98,7 +109,7 @@ pub async fn create(State(state): State<AdminState>, session: AdminSession, Form
         return reshow(&state, &session, Some("Quota must be a number of GiB.")).await;
     };
 
-    match state.store.create_plan(name, quota, nonempty(&form.stripe_price_id)).await {
+    match state.store.create_plan(new_plan(name, quota, &form)).await {
         Ok(_) => {
             let _ = state.store.log_event(&session.handle, "create-plan", name).await;
             Redirect::to("/admin/plans").into_response()
@@ -110,33 +121,35 @@ pub async fn create(State(state): State<AdminState>, session: AdminSession, Form
     }
 }
 
-#[derive(Deserialize)]
-pub struct UpdatePlanForm {
-    csrf: String,
-    quota_gib: String,
-    #[serde(default)]
-    stripe_price_id: String,
-}
-
 pub async fn update(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Path(name): Path<String>,
-    Form(form): Form<UpdatePlanForm>,
+    Form(form): Form<PlanForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
     let Some(quota) = parse_gib(&form.quota_gib) else {
         return Redirect::to("/admin/plans").into_response();
     };
-    if let Err(error) = state.store.update_plan(&name, quota, nonempty(&form.stripe_price_id)).await {
+    if let Err(error) = state.store.update_plan(&name, new_plan(&name, quota, &form)).await {
         return internal(error);
     }
     let _ = state.store.log_event(&session.handle, "update-plan", &name).await;
 
     Redirect::to("/admin/plans").into_response()
+}
+
+fn new_plan<'a>(name: &'a str, quota_bytes: i64, form: &'a PlanForm) -> store::NewPlan<'a> {
+    store::NewPlan {
+        name,
+        quota_bytes,
+        stripe_price_id: nonempty(&form.stripe_price_id),
+        price_cents: parse_cents(&form.price),
+        description: nonempty(&form.description),
+    }
 }
 
 #[derive(Deserialize)]
@@ -145,12 +158,12 @@ pub struct DeletePlanForm {
 }
 
 pub async fn delete(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Path(name): Path<String>,
     Form(form): Form<DeletePlanForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -168,7 +181,7 @@ pub async fn delete(
     Redirect::to("/admin/plans").into_response()
 }
 
-async fn reshow(state: &AdminState, session: &AdminSession, error: Option<&str>) -> Response {
+async fn reshow(state: &AppState, session: &AdminSession, error: Option<&str>) -> Response {
     match state.store.list_plans().await {
         Ok(plans) => {
             (StatusCode::BAD_REQUEST, view::layout("night", "Plans", "/admin/plans", session, body(session, &plans, error)))
@@ -180,6 +193,19 @@ async fn reshow(state: &AdminState, session: &AdminSession, error: Option<&str>)
 
 fn gib(bytes: i64) -> String {
     format!("{:.2}", bytes as f64 / GIB)
+}
+
+fn dollars(cents: i32) -> String {
+    format!("{:.2}", cents as f64 / 100.0)
+}
+
+/// A dollar amount to integer cents; blank/invalid = no price.
+fn parse_cents(raw: &str) -> Option<i32> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    trimmed.parse::<f64>().ok().map(|dollars| (dollars * 100.0).round() as i32)
 }
 
 fn nonempty(value: &str) -> Option<&str> {

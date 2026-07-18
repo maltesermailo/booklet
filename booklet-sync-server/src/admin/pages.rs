@@ -3,7 +3,7 @@
 //! re-show with an error live here too, so the page has one definition.
 
 use super::view::{self, bytes, chart, when, Theme};
-use super::{internal, AdminState};
+use super::{internal, AppState};
 use crate::store::{AdminSession, Billing, DeleteImpact, UserRow};
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
@@ -11,7 +11,7 @@ use axum::response::{IntoResponse, Response};
 use maud::{html, Markup};
 use std::time::Duration;
 
-pub async fn overview(State(state): State<AdminState>, session: AdminSession, Theme(theme): Theme) -> Response {
+pub async fn overview(State(state): State<AppState>, session: AdminSession, Theme(theme): Theme) -> Response {
     let overview = match state.store.overview().await {
         Ok(overview) => overview,
         Err(error) => return internal(error),
@@ -73,7 +73,7 @@ pub async fn overview(State(state): State<AdminState>, session: AdminSession, Th
     view::layout(theme, "Overview", "/admin", &session, body).into_response()
 }
 
-pub async fn users(State(state): State<AdminState>, session: AdminSession, Theme(theme): Theme) -> Response {
+pub async fn users(State(state): State<AppState>, session: AdminSession, Theme(theme): Theme) -> Response {
     let users = match state.store.list_users().await {
         Ok(users) => users,
         Err(error) => return internal(error),
@@ -138,7 +138,7 @@ pub(super) fn users_body(session: &AdminSession, users: &[UserRow], mail: bool, 
 }
 
 pub async fn user_detail(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Theme(theme): Theme,
     Path(id): Path<i64>,
@@ -279,7 +279,7 @@ fn account_forms(session: &AdminSession, user: &UserRow, billing: &Billing) -> M
 }
 
 pub async fn confirm_delete_user(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Theme(theme): Theme,
     Path(id): Path<i64>,
@@ -327,7 +327,7 @@ pub(super) fn confirm_delete_body(
     }
 }
 
-pub async fn devices(State(state): State<AdminState>, session: AdminSession, Theme(theme): Theme) -> Response {
+pub async fn devices(State(state): State<AppState>, session: AdminSession, Theme(theme): Theme) -> Response {
     let devices = match state.store.list_devices(None).await {
         Ok(devices) => devices,
         Err(error) => return internal(error),
@@ -341,7 +341,7 @@ pub async fn devices(State(state): State<AdminState>, session: AdminSession, The
     view::layout(theme, "Devices", "/admin/devices", &session, body).into_response()
 }
 
-pub async fn vaults(State(state): State<AdminState>, session: AdminSession, Theme(theme): Theme) -> Response {
+pub async fn vaults(State(state): State<AppState>, session: AdminSession, Theme(theme): Theme) -> Response {
     let vaults = match state.store.list_vaults_admin(None).await {
         Ok(vaults) => vaults,
         Err(error) => return internal(error),
@@ -355,7 +355,7 @@ pub async fn vaults(State(state): State<AdminState>, session: AdminSession, Them
     view::layout(theme, "Vaults", "/admin/vaults", &session, body).into_response()
 }
 
-pub async fn log(State(state): State<AdminState>, session: AdminSession, Theme(theme): Theme) -> Response {
+pub async fn log(State(state): State<AppState>, session: AdminSession, Theme(theme): Theme) -> Response {
     let rows = match state.store.recent_audit(200).await {
         Ok(rows) => rows,
         Err(error) => return internal(error),

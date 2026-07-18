@@ -8,6 +8,7 @@
 //! - [`admin`] — the localhost-only, cookie-authenticated web admin panel.
 
 pub mod admin;
+pub mod app;
 pub mod auth;
 pub mod billing;
 pub mod blob;

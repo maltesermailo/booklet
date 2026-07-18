@@ -5,7 +5,7 @@
 
 use super::pages::{confirm_delete_body, users_body};
 use super::view::{self, Theme};
-use super::{csrf_rejection, internal, AdminState};
+use super::{csrf_rejection, internal, AppState};
 use crate::auth;
 use crate::store::{self, AdminSession};
 use axum::body::Bytes;
@@ -32,11 +32,11 @@ pub struct CreateUserForm {
 }
 
 pub async fn create_user(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Form(form): Form<CreateUserForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -67,12 +67,12 @@ pub async fn create_user(
 }
 
 pub async fn disable_user(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Path(id): Path<i64>,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -92,13 +92,13 @@ pub struct DeleteUserForm {
 }
 
 pub async fn delete_user(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Theme(theme): Theme,
     Path(id): Path<i64>,
     Form(form): Form<DeleteUserForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -124,12 +124,12 @@ pub async fn delete_user(
 }
 
 pub async fn revoke_device(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Path(id): Path<i64>,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -154,12 +154,12 @@ pub struct QuotaForm {
 }
 
 pub async fn set_quota(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Path(id): Path<i64>,
     Form(form): Form<QuotaForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -186,13 +186,13 @@ pub struct PlanForm {
 }
 
 pub async fn checkout(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Theme(theme): Theme,
     Path(id): Path<i64>,
     Form(form): Form<PlanForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -224,13 +224,13 @@ pub async fn checkout(
 }
 
 pub async fn portal(
-    State(state): State<AdminState>,
+    State(state): State<AppState>,
     session: AdminSession,
     Theme(theme): Theme,
     Path(id): Path<i64>,
     Form(form): Form<CsrfForm>,
 ) -> Response {
-    if let Some(response) = csrf_rejection(&session, &form.csrf) {
+    if let Some(response) = csrf_rejection(&session.csrf, &form.csrf) {
         return response;
     }
 
@@ -254,7 +254,7 @@ pub async fn portal(
 
 /// The Stripe webhook: public, but authenticated by its signature. It reconciles
 /// our copy of a user's plan/status with Stripe's subscription events.
-pub async fn stripe_webhook(State(state): State<AdminState>, headers: HeaderMap, body: Bytes) -> Response {
+pub async fn stripe_webhook(State(state): State<AppState>, headers: HeaderMap, body: Bytes) -> Response {
     let Some(stripe) = state.stripe.as_ref() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
@@ -273,7 +273,7 @@ pub async fn stripe_webhook(State(state): State<AdminState>, headers: HeaderMap,
     StatusCode::OK.into_response()
 }
 
-async fn apply_event(state: &AdminState, event: &serde_json::Value) {
+async fn apply_event(state: &AppState, event: &serde_json::Value) {
     let object = &event["data"]["object"];
 
     match event["type"].as_str().unwrap_or_default() {
@@ -307,7 +307,7 @@ async fn apply_event(state: &AdminState, event: &serde_json::Value) {
 
 // --- helpers ---
 
-async fn reshow_users(state: &AdminState, session: &AdminSession, error: Option<&str>) -> Response {
+async fn reshow_users(state: &AppState, session: &AdminSession, error: Option<&str>) -> Response {
     match state.store.list_users().await {
         Ok(users) => {
             let status = if error.is_some() { StatusCode::BAD_REQUEST } else { StatusCode::OK };

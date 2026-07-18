@@ -3,7 +3,7 @@
 //! routes. Everything is served from the binary — no external requests, so an
 //! air-gapped box still renders the panel in Booklet's face.
 
-use crate::store::{AdminSession, Point};
+use crate::store::{AdminSession, Point, WebSession};
 use axum::extract::{FromRequestParts, Path, Query};
 use axum::http::request::Parts;
 use axum::http::{header, StatusCode};
@@ -40,10 +40,46 @@ pub fn layout(theme: &str, title: &str, current: &str, session: &AdminSession, b
                         }
                     }
                     (theme_toggle(theme, current))
-                    form.signout method="post" action="/admin/logout" {
+                    form.signout method="post" action="/logout" {
                         input type="hidden" name="csrf" value=(session.csrf);
                         span.who { (session.handle) }
                         button type="submit" { "Sign out" }
+                    }
+                }
+                main { (body) }
+            }
+        }
+    }
+}
+
+/// The public site / account-portal shell: wordmark home link, Pricing, and
+/// either Log in / Sign up (a stranger) or Account / Sign out (signed in, plus an
+/// Admin link when the user is an operator).
+pub fn site_layout(theme: &str, title: &str, session: Option<&WebSession>, body: Markup) -> Markup {
+    html! {
+        (DOCTYPE)
+        html data-theme=(theme) {
+            (head_element(title))
+            body.site {
+                header.topbar {
+                    a.wordmark href="/" { "Booklet" }
+                    nav {
+                        a href="/pricing" { "Pricing" }
+                        @if let Some(session) = session {
+                            @if session.is_admin { a href="/admin" { "Admin" } }
+                            a href="/account" { "Account" }
+                        } @else {
+                            a href="/login" { "Log in" }
+                        }
+                    }
+                    (theme_toggle(theme, "/"))
+                    @if let Some(session) = session {
+                        form.signout method="post" action="/logout" {
+                            input type="hidden" name="csrf" value=(session.csrf);
+                            button type="submit" { "Sign out" }
+                        }
+                    } @else {
+                        a.button href="/signup" { "Sign up" }
                     }
                 }
                 main { (body) }
@@ -70,15 +106,15 @@ pub fn login_page(theme: &str, error: Option<&str>) -> Markup {
         theme,
         "Sign in",
         html! {
-            form.card method="post" action="/admin/login" {
-                h1 { "Booklet admin" }
+            form.card method="post" action="/login" {
+                h1 { "Sign in to Booklet" }
                 @if let Some(message) = error {
                     p.error { (message) }
                 }
                 label { "Handle" input type="text" name="handle" autocomplete="username" autofocus; }
                 label { "Password" input type="password" name="password" autocomplete="current-password"; }
                 button type="submit" { "Sign in" }
-                p.aside { a href="/admin/forgot" { "Forgot password?" } }
+                p.aside { a href="/forgot" { "Forgot password?" } " · " a href="/signup" { "Sign up" } }
             }
         },
     )
@@ -87,7 +123,7 @@ pub fn login_page(theme: &str, error: Option<&str>) -> Markup {
 fn theme_toggle(theme: &str, current: &str) -> Markup {
     let (next, glyph) = if theme == "light" { ("night", "☾") } else { ("light", "☀") };
     html! {
-        a.themetoggle href=(format!("/admin/theme?set={next}&from={current}")) title="Toggle theme" { (glyph) }
+        a.themetoggle href=(format!("/theme?set={next}&from={current}")) title="Toggle theme" { (glyph) }
     }
 }
 
@@ -97,7 +133,7 @@ fn head_element(title: &str) -> Markup {
             meta charset="utf-8";
             meta name="viewport" content="width=device-width, initial-scale=1";
             title { "Booklet — " (title) }
-            link rel="stylesheet" href="/admin/assets/panel.css";
+            link rel="stylesheet" href="/assets/panel.css";
         }
     }
 }
@@ -182,10 +218,11 @@ pub struct ThemeQuery {
 /// Sets the theme cookie and returns to the page the toggle was on.
 pub async fn set_theme(Query(query): Query<ThemeQuery>) -> Response {
     let theme = if query.set == "light" { "light" } else { "night" };
-    let back = if query.from.starts_with("/admin") { query.from.clone() } else { "/admin".to_string() };
+    // Only same-site relative paths, so the toggle can't be an open redirect.
+    let back = if query.from.starts_with('/') && !query.from.starts_with("//") { query.from.as_str() } else { "/" };
     let cookie = format!("{THEME_COOKIE}={theme}; Path=/; Max-Age=31536000; SameSite=Lax");
 
-    ([(header::SET_COOKIE, cookie)], Redirect::to(&back)).into_response()
+    ([(header::SET_COOKIE, cookie)], Redirect::to(back)).into_response()
 }
 
 // --- asset routes (no auth: the login page needs them) ---
