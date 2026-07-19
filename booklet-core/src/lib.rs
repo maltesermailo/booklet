@@ -11,6 +11,7 @@ pub mod document;
 pub mod engine;
 pub mod links;
 pub mod merge;
+pub mod render;
 pub mod search;
 pub mod sync;
 pub mod tags;

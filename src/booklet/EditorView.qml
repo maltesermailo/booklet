@@ -187,6 +187,7 @@ Rectangle {
             view.loading = true
             editor.text = NoteEditor.source()
             view.loading = false
+            highlighter.decorations = NoteEditor.decorations()
 
             var meta = JSON.parse(NoteEditor.meta())
             view.section = meta.section !== undefined ? meta.section : ""
@@ -408,6 +409,7 @@ Rectangle {
                         if (view.loading)
                             return
                         NoteEditor.set_source(editor.text)
+                        highlighter.decorations = NoteEditor.decorations()
                         saveTimer.restart()
                     }
                     onActiveFocusChanged: {
@@ -419,6 +421,7 @@ Rectangle {
                     }
 
                     MarkdownHighlighter {
+                        id: highlighter
                         // Detaching from the document is what "Source" means:
                         // no styling, no hidden markers, just the markdown.
                         document: view.livePreview ? editor.textDocument : null
@@ -428,6 +431,7 @@ Rectangle {
                         textColor: Theme.textBright
                         linkColor: Theme.ember
                         unresolvedColor: Theme.textSoft
+                        codeBackground: Theme.codeBg
                         headingFamily: Theme.display
                         headingPixelSize: view.headingSize
                     }

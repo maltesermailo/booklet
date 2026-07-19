@@ -182,6 +182,15 @@ impl NoteEditor {
         self.document.as_ref().map(|document| document.source().to_string()).unwrap_or_default()
     }
 
+    /// The live-preview decorations (styled spans, UTF-16 offsets) for the open
+    /// note's current text, as JSON for the C++ highlighter. The editor fetches
+    /// this after each `set_source`, so it tracks what has been typed.
+    #[qslot]
+    fn decorations(&self) -> String {
+        let source = self.document.as_ref().map(|document| document.source()).unwrap_or("");
+        serde_json::to_string(&booklet_core::render::decorations(source)).expect("decorations serialize to JSON")
+    }
+
     /// Takes the editor's text, without writing. Cheap enough to call on every
     /// keystroke; `flush` decides when it reaches the disk.
     #[qslot]

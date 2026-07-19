@@ -7,8 +7,10 @@
 
 #include <QColor>
 #include <QQuickTextDocument>
+#include <QString>
 #include <QSyntaxHighlighter>
 #include <QTextCharFormat>
+#include <QVector>
 
 // Dims markdown's syntax markers and styles the text as it will render, so
 // "# Test" already reads as a heading while you type it.
@@ -30,8 +32,14 @@ class MarkdownHighlighter : public QSyntaxHighlighter
     Q_PROPERTY(QColor textColor MEMBER m_textColor NOTIFY styleChanged)
     Q_PROPERTY(QColor linkColor MEMBER m_linkColor NOTIFY styleChanged)
     Q_PROPERTY(QColor unresolvedColor MEMBER m_unresolvedColor NOTIFY styleChanged)
+    // Fill behind code blocks and blockquotes (the `--code-bg` / `--edit-bg` token).
+    Q_PROPERTY(QColor codeBackground MEMBER m_codeBackground NOTIFY styleChanged)
     Q_PROPERTY(QString headingFamily MEMBER m_headingFamily NOTIFY styleChanged)
     Q_PROPERTY(int headingPixelSize MEMBER m_headingPixelSize NOTIFY styleChanged)
+    // The decoration list (JSON) from `NoteEditor.decorations()` — parsed
+    // CommonMark+GFM spans this styles. Write-only: the editor pushes it after
+    // each keystroke's `set_source`.
+    Q_PROPERTY(QString decorations WRITE setDecorations)
 
 public:
     explicit MarkdownHighlighter(QObject *parent = nullptr);
@@ -45,6 +53,8 @@ public:
     QStringList knownTitles() const;
     void setKnownTitles(const QStringList &titles);
 
+    void setDecorations(const QString &json);
+
 Q_SIGNALS:
     void documentChanged();
     void cursorPositionChanged();
@@ -55,9 +65,29 @@ protected:
     void highlightBlock(const QString &text) override;
 
 private:
+    // One decoration span, in document (UTF-16) coordinates, from the Rust parser.
+    struct Deco
+    {
+        int start = 0;
+        int len = 0;
+        QString kind;
+        int level = 0;
+        QString text;
+        bool flag = false;
+    };
+
+    // The character format a decoration contributes (merged per character so
+    // nested spans — bold inside a heading, italic inside bold — compose).
+    QTextCharFormat formatFor(const Deco &deco, bool onCursorLine) const;
     // `base` carries the face the marker should take if it is shown.
     QTextCharFormat markerFormat(const QTextCharFormat &base, bool onCursorLine) const;
     int blockNumberAt(int position) const;
+
+    QVector<Deco> m_decos;
+    // The JSON last applied, so an unchanged push is a no-op — which also breaks
+    // the rehighlight → text-change → re-push cycle (a format pass never changes
+    // the source, so the re-pushed JSON is identical and stops here).
+    QString m_decorationsJson;
 
     QQuickTextDocument *m_document = nullptr;
     int m_cursorPosition = -1;
@@ -67,6 +97,7 @@ private:
     QColor m_textColor;
     QColor m_linkColor;
     QColor m_unresolvedColor;
+    QColor m_codeBackground;
     QString m_headingFamily;
     int m_headingPixelSize = 24;
 };
