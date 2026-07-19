@@ -105,8 +105,14 @@ void MarkdownHighlighter::highlightBlock(const QString &text)
     static const QRegularExpression heading(QStringLiteral("^(#{1,6})(\\s+)(.*)$"));
     const QRegularExpressionMatch headingMatch = heading.match(text);
     if (headingMatch.hasMatch()) {
+        // Size by level: # is the largest, ###### the smallest, as ratios of the
+        // H1 size the editor configures. Without this every level rendered the
+        // same size.
+        const int level = headingMatch.capturedLength(1); // 1..6
+        static const double kScale[] = {1.0, 1.0, 0.84, 0.72, 0.63, 0.57, 0.52};
+
         QFont face(m_headingFamily);
-        face.setPixelSize(m_headingPixelSize);
+        face.setPixelSize(static_cast<int>(m_headingPixelSize * kScale[level] + 0.5));
         face.setWeight(QFont::Medium);
 
         QTextCharFormat body;
@@ -162,6 +168,32 @@ void MarkdownHighlighter::highlightBlock(const QString &text)
         setFormat(match.capturedStart(2), match.capturedLength(2), target);
 
         const QTextCharFormat marker = markerFormat(target, onCursorLine);
+        setFormat(match.capturedStart(1), 2, marker);
+        setFormat(match.capturedStart(3), 2, marker);
+    }
+
+    // `inline code`: monospace, the backticks go.
+    static const QRegularExpression code(QStringLiteral("(`)([^`]+)(`)"));
+    for (auto it = code.globalMatch(text); it.hasNext();) {
+        const QRegularExpressionMatch match = it.next();
+        QTextCharFormat mono;
+        mono.setFontFamilies({QStringLiteral("JetBrains Mono"), QStringLiteral("monospace")});
+        setFormat(match.capturedStart(2), match.capturedLength(2), mono);
+
+        const QTextCharFormat marker = markerFormat(mono, onCursorLine);
+        setFormat(match.capturedStart(1), 1, marker);
+        setFormat(match.capturedStart(3), 1, marker);
+    }
+
+    // ~~strikethrough~~: the text is struck, the tildes go.
+    static const QRegularExpression strike(QStringLiteral("(~~)([^~]+)(~~)"));
+    for (auto it = strike.globalMatch(text); it.hasNext();) {
+        const QRegularExpressionMatch match = it.next();
+        QTextCharFormat struck;
+        struck.setFontStrikeOut(true);
+        setFormat(match.capturedStart(2), match.capturedLength(2), struck);
+
+        const QTextCharFormat marker = markerFormat(struck, onCursorLine);
         setFormat(match.capturedStart(1), 2, marker);
         setFormat(match.capturedStart(3), 2, marker);
     }

@@ -19,16 +19,25 @@ Rectangle {
 
     // Closing is only possible once there is somewhere to close *to*.
     signal dismissed()
-    // Opens the sign-in dialog (owned by Main).
+    // Opens the sign-in / clone dialogs (owned by Main).
     signal signInRequested()
+    signal cloneRequested()
 
     property var recents: []
+    property bool signedIn: false
 
     function reload() {
         picker.recents = JSON.parse(Library.recent_vaults())
+        picker.signedIn = Sync.is_signed_in()
     }
 
     onVisibleChanged: if (visible) reload()
+
+    Connections {
+        target: Sync
+        function onSigned_in(ok) { picker.signedIn = ok }
+        function onStatus_changed(payload) { picker.signedIn = JSON.parse(payload).signed_in }
+    }
 
     Connections {
         target: Library
@@ -364,10 +373,14 @@ Rectangle {
                         }
                         ActionRow {
                             width: parent.width
-                            title: "Connect to a sync server"
-                            blurb: "Sign in to publish this vault or clone one from the server."
-                            action: "Sign in"
-                            onTriggered: picker.signInRequested()
+                            // Once signed in, the useful next step with no vault is
+                            // to clone one you've published from another device.
+                            title: picker.signedIn ? "Clone a vault from your server"
+                                                   : "Connect to a sync server"
+                            blurb: picker.signedIn ? "Pull down a vault you published from another device."
+                                                   : "Sign in to publish this vault or clone one from the server."
+                            action: picker.signedIn ? "Clone" : "Sign in"
+                            onTriggered: picker.signedIn ? picker.cloneRequested() : picker.signInRequested()
                         }
                     }
                 }

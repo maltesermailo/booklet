@@ -18,6 +18,9 @@ Popup {
     property int selected: -1
     property string folder: ""
 
+    // A vault was cloned and made active; Main uses this to close the picker.
+    signal cloned()
+
     function openClone() {
         dialog.vaults = []
         dialog.selected = -1
@@ -154,6 +157,7 @@ Popup {
                     }))
                     Library.add_vault(dialog.folder)
                     Library.set_active(dialog.folder)
+                    dialog.cloned()
                     dialog.close()
                 }
             }

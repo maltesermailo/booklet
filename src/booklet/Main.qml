@@ -359,13 +359,28 @@ ApplicationWindow {
         onDeleteVaultRequested: (name) => { deleteVaultDialog.vaultName = name; deleteVaultDialog.open() }
     }
 
-    CloneDialog { id: cloneDialog }
+    CloneDialog {
+        id: cloneDialog
+        // Cloning made a vault active; leave the welcome screen behind.
+        onCloned: root.pickerOpen = false
+    }
     DeleteVaultDialog { id: deleteVaultDialog }
+
+    // Signing in from the welcome screen has one useful next step with no vault:
+    // clone one you've published elsewhere. So lead straight there.
+    Connections {
+        target: Sync
+        function onSigned_in(ok) {
+            if (ok && root.pickerOpen)
+                cloneDialog.openClone()
+        }
+    }
 
     VaultPicker {
         anchors.fill: parent
         visible: root.pickerOpen
         onDismissed: root.pickerOpen = false
         onSignInRequested: signInDialog.open()
+        onCloneRequested: cloneDialog.openClone()
     }
 }

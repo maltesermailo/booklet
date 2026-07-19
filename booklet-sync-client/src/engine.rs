@@ -114,7 +114,13 @@ pub fn pull(
         let local = root.join(&change.path);
 
         if change.deleted {
-            let _ = fs::remove_file(&local);
+            // A folder only removes when empty on this side (its notes may be
+            // ones this device never saw); a file just goes.
+            if change.kind == proto::EntityKind::Folder {
+                let _ = fs::remove_dir(&local);
+            } else {
+                let _ = fs::remove_file(&local);
+            }
         } else if change.kind == proto::EntityKind::Folder {
             fs::create_dir_all(&local)?;
         } else if let Some(hash) = &change.blob {
@@ -145,6 +151,27 @@ fn push_entity(
     today: &str,
     outcome: &mut PushOutcome,
 ) -> Result<(), ClientError> {
+    // A folder is an entity with no content — pushing it only asserts it exists.
+    // Reading its path as a file would fail with "is a directory".
+    if kind == EntryKind::Folder {
+        let request = proto::PutRequest {
+            kind: to_proto(kind),
+            base_version: version_of(state, path),
+            blob: None,
+            moved_from: None,
+        };
+        match client.put_entity(vault, path, &request)? {
+            PutResult::Applied(response) => {
+                state.versions.insert(path.to_string(), response.version);
+            }
+            // Nothing to merge for a folder; adopt the server's version and move on.
+            PutResult::Conflict(conflict) => {
+                state.versions.insert(path.to_string(), conflict.current_version);
+            }
+        }
+        return Ok(());
+    }
+
     let content = fs::read(root.join(path))?;
     let base = version_of(state, path);
     let hash = client.put_blob(&content)?;

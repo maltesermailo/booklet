@@ -9,12 +9,14 @@
 use booklet_core::Manifest;
 use booklet_sync_client::{pull, push, Client, ClientState};
 use booklet_sync_proto as proto;
-use booklet_sync_server::{auth, http, store::Store};
+use booklet_sync_server::admin::AppState;
+use booklet_sync_server::{app, auth, store::Store};
 use sqlx::PgPool;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::Instant;
 
 static COUNTER: AtomicUsize = AtomicUsize::new(0);
 
@@ -29,7 +31,8 @@ async fn two_devices_reconcile(pool: PgPool) {
     // Serve on an ephemeral port, on this runtime.
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
-    tokio::spawn(async move { axum::serve(listener, http::router(store)).await.unwrap() });
+    let state = AppState::new(store, Instant::now());
+    tokio::spawn(async move { axum::serve(listener, app::app(state)).await.unwrap() });
 
     // The blocking client scenario runs off the async runtime; a panicked
     // assertion inside it fails the test through the join.
@@ -86,6 +89,16 @@ fn scenario(base: &str) {
     // And the conflict copy syncs like any other note — A pulls it.
     pull(&alice, &vault, &dir_a, &mut vault_a.manifest, &mut vault_a.state).unwrap();
     assert_eq!(read(&dir_a, "Solo (conflict 2026-07-17).md"), "B's solo\n");
+
+    // --- A subfolder (a book/section) pushes without an "is a directory" error,
+    //     and the folder itself syncs to B. ---
+    fs::create_dir_all(dir_a.join("Chapter")).unwrap();
+    write(&dir_a.join("Chapter"), "Inside.md", "# Inside\n");
+    push(&alice, &vault, &dir_a, &mut vault_a.manifest, &mut vault_a.state, TODAY).unwrap();
+
+    pull(&alice_phone, &vault, &dir_b, &mut vault_b.manifest, &mut vault_b.state).unwrap();
+    assert!(dir_b.join("Chapter").is_dir(), "the folder synced to B as a directory");
+    assert_eq!(read(&dir_b.join("Chapter"), "Inside.md"), "# Inside\n");
 }
 
 /// One device's baseline manifest and sync state for a vault.
