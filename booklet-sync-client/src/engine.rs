@@ -214,16 +214,41 @@ fn reconcile(
         None => Vec::new(),
     };
 
+    // An image is binary: the markdown merge would read its bytes as UTF-8
+    // (lossily) and run diff-match-patch over them, corrupting the file, and a
+    // conflict copy makes no sense for content that cannot be merged. So every
+    // image conflict — with or without an ancestor — resolves last-write-wins on
+    // the local bytes (blob identity): adopt local as-is and re-put it against
+    // the version we lost to. This is handled before the ancestor/no-ancestor
+    // split so images never reach the text merge or a conflict copy. No review
+    // flag, which is only for a fuzzy markdown merge.
+    if kind == EntryKind::Image {
+        // The local bytes are already on disk, so nothing is rewritten and the
+        // editor needs no reload — just re-put local against the version we lost
+        // to, exactly as the merged path re-pushes its resolved bytes below.
+        let hash = client.put_blob(&local)?;
+        let request = proto::PutRequest {
+            kind: to_proto(kind),
+            base_version: conflict.current_version,
+            blob: Some(hash),
+            moved_from: None,
+        };
+        if let PutResult::Applied(response) = client.put_entity(vault, path, &request)? {
+            state.versions.insert(path.to_string(), response.version);
+        }
+        return Ok(());
+    }
+
     // base == 0 means we never synced this path: two devices created the same
     // name, with no ancestor to merge from.
     if base == 0 {
         return conflict_copy(client, vault, root, path, &local, &remote, conflict.current_version, state, today, outcome);
     }
 
-    let ancestor = fetch_ancestor(client, vault, path, base)?;
     let merged = if kind == EntryKind::BookMeta {
         merge::merge_booklet_json(&text(&local), &text(&remote)).into_bytes()
     } else {
+        let ancestor = fetch_ancestor(client, vault, path, base)?;
         let markdown = merge::merge_markdown(&text(&ancestor), &text(&local), &text(&remote))
             .map_err(ClientError::Merge)?;
         if !markdown.clean {
@@ -344,6 +369,7 @@ fn to_proto(kind: EntryKind) -> proto::EntityKind {
         EntryKind::Note => proto::EntityKind::Note,
         EntryKind::BookMeta => proto::EntityKind::BookMeta,
         EntryKind::Folder => proto::EntityKind::Folder,
+        EntryKind::Image => proto::EntityKind::Image,
     }
 }
 

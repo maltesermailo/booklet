@@ -11,9 +11,6 @@ ApplicationWindow {
     title: root.noteTitle === "" ? "Booklet" : root.noteTitle + " — Booklet"
     color: Theme.bg
 
-    // The shelf is a full-window mode; the reading layout hides while it is up.
-    // Settings is a modal over it, so it needs no flag of its own.
-    property bool shelfOpen: false
     // The welcome screen. Shown when there is no vault to reopen; a bare start
     // otherwise goes straight back to where you were reading.
     property bool pickerOpen: false
@@ -157,10 +154,6 @@ ApplicationWindow {
         onActivated: quickSwitcher.openSwitcher()
     }
     Shortcut {
-        sequence: "Ctrl+L"
-        onActivated: root.shelfOpen = !root.shelfOpen
-    }
-    Shortcut {
         sequence: "Ctrl+T"
         onActivated: root.newTab()
     }
@@ -200,11 +193,8 @@ ApplicationWindow {
         // The picker closes only when there is a vault to close to; with none,
         // Escape would drop you on an empty reading pane. Settings is a Popup
         // and closes itself.
-        enabled: root.shelfOpen || (root.pickerOpen && Library.active_vault() !== "")
-        onActivated: {
-            root.shelfOpen = false
-            root.pickerOpen = false
-        }
+        enabled: root.pickerOpen && Library.active_vault() !== ""
+        onActivated: root.pickerOpen = false
     }
 
     // A new tab has nothing to show until you pick a note, so open the switcher
@@ -219,7 +209,7 @@ ApplicationWindow {
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
-        visible: !root.shelfOpen && !root.pickerOpen
+        visible: !root.pickerOpen
 
         TopBar {
             Layout.fillWidth: true
@@ -237,7 +227,13 @@ ApplicationWindow {
             onShowMarginalia: root.marginaliaVisible = true
             onOpenSettings: settingsView.open()
             onOpenPicker: root.pickerOpen = true
-            onOpenShelf: root.shelfOpen = true
+            // A breadcrumb segment: open the sidebar, expand down to it, and let
+            // the tree scroll to and pulse it so you see where it lives.
+            onRevealRequested: (id) => {
+                root.sidebarVisible = true
+                Library.reveal(id)
+                treePane.revealTo(id)
+            }
             onSignInRequested: signInDialog.open()
             onDeleteVaultRequested: (name) => { deleteVaultDialog.vaultName = name; deleteVaultDialog.open() }
             onOpenHistory: if (NoteEditor.current_id() !== "") versionHistory.openFor(NoteEditor.current_id())
@@ -333,22 +329,6 @@ ApplicationWindow {
                 }
             }
             treePane.cancelEdit()
-        }
-    }
-
-    // One full-window mode at a time; two stacked would strand the lower one.
-    onShelfOpenChanged: if (shelfOpen) pickerOpen = false
-    onPickerOpenChanged: if (pickerOpen) shelfOpen = false
-
-    ShelfView {
-        id: shelfView
-        anchors.fill: parent
-        visible: root.shelfOpen
-
-        // Picking a book opens it in the tree and drops back to reading.
-        onBookPicked: (id) => {
-            Library.reveal(id)
-            root.shelfOpen = false
         }
     }
 

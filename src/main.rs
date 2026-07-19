@@ -15,6 +15,9 @@ extern "C" {
     /// because the highlighter has to attach to `TextEdit.textDocument`, which
     /// qtbridge exposes no way to reach — see CLAUDE.md and src/cpp/.
     fn booklet_register_highlighter();
+    /// Registers `ClipboardImage`, which reads a pasted image off the clipboard —
+    /// `QClipboard` is likewise out of qtbridge's reach.
+    fn booklet_register_clipboard_image();
 }
 
 fn main() {
@@ -41,7 +44,6 @@ fn main() {
     qtbridge::include_bytes_qml!("booklet/Marginalia.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/StarMap.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/QuickSwitcher.qml", "qt/qml");
-    qtbridge::include_bytes_qml!("booklet/ShelfView.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/SettingsView.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/SettingsPane.qml", "qt/qml");
     qtbridge::include_bytes_qml!("booklet/SettingSlider.qml", "qt/qml");
@@ -68,9 +70,12 @@ fn main() {
         .register::<links::Backlinks>()
         .register::<sync::Sync>();
 
-    // SAFETY: a plain qmlRegisterType call, made after the application exists
-    // and before any QML is loaded.
-    unsafe { booklet_register_highlighter() };
+    // SAFETY: plain qmlRegisterType calls, made after the application exists and
+    // before any QML is loaded.
+    unsafe {
+        booklet_register_highlighter();
+        booklet_register_clipboard_image();
+    }
 
     app.add_import_path("qrc:/qt/qml")
         .load_qml_from_file("qrc:/qt/qml/booklet/Main.qml")

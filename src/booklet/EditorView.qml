@@ -1,5 +1,6 @@
 import QtQuick
 import QtQuick.Controls
+import QtQuick.Dialogs
 import booklet
 
 // The note editor: one surface over the whole note, always editable — no mode
@@ -25,6 +26,107 @@ Rectangle {
     property var knownTitles: []
     property string section: ""
     property real modified: -1
+
+    // Inline widgets drawn over the collapsed source — task checkboxes,
+    // horizontal rules, and table grids. Filled from each parse by
+    // refreshDecorations(); the highlighter styles everything else as character
+    // formats.
+    property var taskWidgets: []
+    property var ruleWidgets: []
+    property var tableWidgets: []
+    property var imageWidgets: []
+
+    // The open note's folder, so a relative image src resolves beside it.
+    property string noteDir: ""
+
+    // Measured render height per image, keyed by the image's document offset.
+    // The image overlay fills this as each picture loads; the highlighter reserves
+    // the matching height so text flows below the drawn image.
+    property var imageHeights: ({})
+
+    // The screen rect of a document position, for placing a widget overlay. Reads
+    // imageHeights so the binding re-evaluates when an image loads and reflows the
+    // text below it — positionToRectangle alone does not track that reflow, which
+    // otherwise leaves widgets under an image stranded at stale positions.
+    function boxAt(position) {
+        var reflow = view.imageHeights // dependency, intentionally unused
+        return editor.positionToRectangle(position)
+    }
+
+    // Resolves an image's `src` to a URL the Image element can load: an absolute
+    // URL as-is, otherwise a file URL relative to the note's folder.
+    function imageUrl(src) {
+        if (/^[a-z]+:\/\//i.test(src))
+            return src
+        var path = src.charAt(0) === "/" ? src : view.noteDir + "/" + src
+        return "file://" + encodeURI(path)
+    }
+
+    // The image extensions the add methods accept (mirrors booklet_core::image).
+    function isImagePath(path) {
+        return /\.(png|jpe?g|gif|webp|svg|bmp)$/i.test(path)
+    }
+
+    // Writes an `![](name)` link at the caret, on its own line so it renders as a
+    // block image. `name` is the file just placed in the note's folder ("" = the
+    // add failed, and the error was already reported).
+    function insertImage(name) {
+        if (name === "")
+            return
+        var pos = editor.cursorPosition
+        var atLineStart = pos === 0 || editor.text.charAt(pos - 1) === "\n"
+        editor.insert(pos, (atLineStart ? "" : "\n") + "![](" + name + ")\n")
+    }
+
+    // Strips a file URL down to a local path (drag-drop and the picker hand out
+    // `file://…` URLs, percent-encoded).
+    function localPath(fileUrl) {
+        return decodeURIComponent(fileUrl.toString().replace(/^file:\/\//, ""))
+    }
+
+    // Records a loaded image's height and pushes the map to the highlighter, which
+    // reserves that space (a no-op when the height is unchanged).
+    function reportImageHeight(start, height) {
+        if (view.imageHeights[start] === height)
+            return
+        var next = {}
+        for (var key in view.imageHeights)
+            next[key] = view.imageHeights[key]
+        next[start] = height
+        view.imageHeights = next
+    }
+
+    // Pixel height of one rendered table row. The highlighter reserves this ×
+    // (rows) of document height per table so the drawn grid has room; both sides
+    // must use the same value or the grid and the text below it disagree.
+    readonly property int tableRowHeight: Math.round(view.fontSize * 2.0)
+
+    // Splits a GFM table's source into a grid: `rows` (the `|---|` separator row
+    // dropped, since it is drawn as the header underline) and the column count.
+    function parseTable(start, len) {
+        var lines = editor.text.substring(start, start + len).split("\n")
+        var rows = []
+        var cols = 0
+        for (var i = 0; i < lines.length; i++) {
+            var line = lines[i].trim()
+            if (line === "")
+                continue
+            if (/^[\s|:\-]+$/.test(line) && line.indexOf("-") !== -1)
+                continue // the separator row
+
+            var parts = line.split("|")
+            var cells = []
+            for (var j = 0; j < parts.length; j++) {
+                // A leading/trailing `|` yields an empty edge piece — drop it.
+                if ((j === 0 || j === parts.length - 1) && parts[j].trim() === "")
+                    continue
+                cells.push(parts[j].trim())
+            }
+            rows.push(cells)
+            cols = Math.max(cols, cells.length)
+        }
+        return { rows: rows, cols: cols }
+    }
 
     // The open note was auto-merged and awaits review; drives the banner.
     property bool flagged: false
@@ -67,6 +169,34 @@ Rectangle {
 
     function refreshFlag() {
         view.flagged = view.hasNote && Sync.is_flagged(NoteEditor.current_id())
+    }
+
+    // One parse feeds both the highlighter (character formats) and the widget
+    // overlays. Tasks and rules become QML items laid over the collapsed source;
+    // the JSON is walked once here rather than again inside each overlay.
+    function refreshDecorations() {
+        var json = NoteEditor.decorations()
+        highlighter.decorations = json
+
+        var decos = JSON.parse(json)
+        var tasks = []
+        var rules = []
+        var tables = []
+        var images = []
+        for (var i = 0; i < decos.length; i++) {
+            if (decos[i].kind === "task")
+                tasks.push(decos[i])
+            else if (decos[i].kind === "rule")
+                rules.push(decos[i])
+            else if (decos[i].kind === "table")
+                tables.push(decos[i])
+            else if (decos[i].kind === "image")
+                images.push(decos[i])
+        }
+        view.taskWidgets = tasks
+        view.ruleWidgets = rules
+        view.tableWidgets = tables
+        view.imageWidgets = images
     }
 
     // Sync merged the open note's file on disk; land the merge in the live editor
@@ -180,6 +310,8 @@ Rectangle {
         target: NoteEditor
         function onNote_opened(id, title) {
             view.hasNote = id !== ""
+            view.noteDir = id.lastIndexOf("/") >= 0 ? id.substring(0, id.lastIndexOf("/")) : ""
+            view.imageHeights = ({}) // heights belong to the note we are leaving
             saveTimer.stop()
 
             // Set, never bind: re-reading the source while typing would move
@@ -187,7 +319,7 @@ Rectangle {
             view.loading = true
             editor.text = NoteEditor.source()
             view.loading = false
-            highlighter.decorations = NoteEditor.decorations()
+            view.refreshDecorations()
 
             var meta = JSON.parse(NoteEditor.meta())
             view.section = meta.section !== undefined ? meta.section : ""
@@ -409,7 +541,7 @@ Rectangle {
                         if (view.loading)
                             return
                         NoteEditor.set_source(editor.text)
-                        highlighter.decorations = NoteEditor.decorations()
+                        view.refreshDecorations()
                         saveTimer.restart()
                     }
                     onActiveFocusChanged: {
@@ -417,6 +549,42 @@ Rectangle {
                         if (!activeFocus) {
                             saveTimer.stop()
                             NoteEditor.flush()
+                        }
+                    }
+
+                    // Pasting an image: save the clipboard picture into the note's
+                    // folder and link it, instead of the plain-text paste that a
+                    // markdown editor would otherwise get (nothing useful). A
+                    // clipboard without an image falls through to the normal paste.
+                    // Qt maps ⌘ to Ctrl on macOS, matching the app's shortcuts.
+                    Keys.onPressed: (event) => {
+                        if ((event.modifiers & Qt.ControlModifier) && event.key === Qt.Key_V) {
+                            var encoded = clipboardImage.pngBase64()
+                            if (encoded !== "") {
+                                view.insertImage(NoteEditor.save_pasted_image(encoded))
+                                event.accepted = true
+                            }
+                        }
+                    }
+
+                    // Dropping image files onto the sheet copies each into the
+                    // note's folder and links it at the drop point. Non-images are
+                    // ignored (a dropped note or PDF is not what this is for).
+                    DropArea {
+                        anchors.fill: parent
+                        // Only claim file drops; a text drag still reaches the editor.
+                        keys: ["text/uri-list"]
+                        onDropped: (drop) => {
+                            if (!drop.hasUrls)
+                                return
+                            editor.forceActiveFocus()
+                            editor.cursorPosition = editor.positionAt(drop.x, drop.y)
+                            for (var i = 0; i < drop.urls.length; i++) {
+                                var path = view.localPath(drop.urls[i])
+                                if (view.isImagePath(path))
+                                    view.insertImage(NoteEditor.import_image(path))
+                            }
+                            drop.accept()
                         }
                     }
 
@@ -432,8 +600,17 @@ Rectangle {
                         linkColor: Theme.ember
                         unresolvedColor: Theme.textSoft
                         codeBackground: Theme.codeBg
+                        codeKeyword: Theme.codeKeyword
+                        codeString: Theme.codeString
+                        codeComment: Theme.codeComment
+                        codeNumber: Theme.codeNumber
+                        codeFunction: Theme.codeFunction
+                        codeType: Theme.codeType
+                        codeConstant: Theme.codeConstant
                         headingFamily: Theme.display
                         headingPixelSize: view.headingSize
+                        tableRowHeight: view.tableRowHeight
+                        imageHeights: JSON.stringify(view.imageHeights)
                     }
 
                     // A link on a line you are not editing is rendered text —
@@ -480,6 +657,199 @@ Rectangle {
                                 NoteEditor.open_by_title(title)
                         }
                     }
+
+                    // Inline widgets, drawn over the source the highlighter has
+                    // collapsed. They are children of the editor, so they live in
+                    // its coordinate space and scroll with the text; the document
+                    // layout places each one via positionToRectangle. On the
+                    // caret's own line the raw markdown shows instead, so the
+                    // overlay steps aside and there is something to edit. The
+                    // models rebuild on every parse (refreshDecorations), which is
+                    // what keeps positions fresh as the text above reflows.
+
+                    // Task checkboxes: a real box over the hidden `[ ]` / `[x]`;
+                    // clicking toggles the one char between the brackets, which
+                    // flows back through the normal edit path (undoable).
+                    Repeater {
+                        model: view.livePreview ? view.taskWidgets : []
+
+                        delegate: Rectangle {
+                            required property var modelData
+
+                            readonly property rect box: view.boxAt(modelData.start)
+                            readonly property rect boxEnd: view.boxAt(modelData.start + modelData.len)
+                            readonly property bool checked: modelData.flag
+
+                            width: Math.round(view.fontSize * 0.9)
+                            height: width
+                            radius: 3
+                            // Centre the box in the width the `[ ]` reserves; a
+                            // wrapped end (boxEnd on another row) falls back to the left.
+                            x: box.x + Math.max(0, (boxEnd.x - box.x - width) / 2)
+                            y: box.y + (box.height - height) / 2
+                            visible: view.lineOf(editor.cursorPosition) !== view.lineOf(modelData.start)
+                            color: checked ? Theme.ember : "transparent"
+                            border.color: checked ? Theme.ember : Theme.textSoft
+                            border.width: 1.5
+
+                            Text {
+                                anchors.centerIn: parent
+                                visible: parent.checked
+                                text: "✓" // ✓
+                                color: Theme.page
+                                font.pixelSize: Math.round(parent.height * 0.8)
+                            }
+
+                            MouseArea {
+                                anchors.fill: parent
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: {
+                                    var pos = modelData.start + 1 // the char inside the brackets
+                                    editor.remove(pos, pos + 1)
+                                    editor.insert(pos, parent.checked ? " " : "x")
+                                }
+                            }
+                        }
+                    }
+
+                    // Horizontal rules: a hairline across the sheet where the
+                    // `---` line has been collapsed to an empty line.
+                    Repeater {
+                        model: view.livePreview ? view.ruleWidgets : []
+
+                        delegate: Rectangle {
+                            required property var modelData
+
+                            readonly property rect box: view.boxAt(modelData.start)
+
+                            x: 0
+                            y: box.y + Math.round(box.height / 2)
+                            width: editor.width
+                            height: 1
+                            visible: view.lineOf(editor.cursorPosition) !== view.lineOf(modelData.start)
+                            color: Theme.pageLine
+                        }
+                    }
+
+                    // Tables: a drawn grid over the reserved (collapsed) source.
+                    // The highlighter makes the table's first line tall enough to
+                    // hold the whole grid; this Column fills exactly that space.
+                    // The caret landing anywhere inside the table reveals the raw
+                    // source (this hides) so it can be edited.
+                    Repeater {
+                        model: view.livePreview ? view.tableWidgets : []
+
+                        delegate: Column {
+                            id: tbl
+                            required property var modelData
+
+                            readonly property rect box: view.boxAt(modelData.start)
+                            readonly property var table: view.parseTable(modelData.start, modelData.len)
+                            readonly property real colWidth: table.cols > 0 ? width / table.cols : width
+                            readonly property bool caretInside:
+                                view.lineOf(editor.cursorPosition) >= view.lineOf(modelData.start)
+                                && view.lineOf(editor.cursorPosition) <= view.lineOf(modelData.start + modelData.len)
+
+                            x: box.x
+                            y: box.y
+                            width: editor.width
+                            visible: !caretInside && table.rows.length > 0
+                            spacing: 0
+
+                            Repeater {
+                                model: tbl.table.rows
+
+                                delegate: Row {
+                                    id: gridRow
+                                    required property var modelData
+                                    required property int index
+
+                                    readonly property bool header: index === 0
+                                    spacing: 0
+
+                                    Repeater {
+                                        model: gridRow.modelData
+
+                                        delegate: Rectangle {
+                                            id: cell
+                                            required property var modelData
+
+                                            width: tbl.colWidth
+                                            height: view.tableRowHeight
+                                            color: gridRow.header ? Theme.codeBg : "transparent"
+                                            border.color: Theme.pageLine
+                                            border.width: 1
+
+                                            Text {
+                                                anchors.fill: parent
+                                                anchors.leftMargin: 8
+                                                anchors.rightMargin: 8
+                                                verticalAlignment: Text.AlignVCenter
+                                                elide: Text.ElideRight
+                                                text: cell.modelData
+                                                color: Theme.text
+                                                font.family: Theme.body
+                                                font.pixelSize: view.fontSize
+                                                font.weight: gridRow.header ? Font.Bold : Font.Normal
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Inline images: the picture drawn over the collapsed
+                    // `![alt](src)`, loaded from the note's folder. Its measured
+                    // height is reported back so the highlighter reserves that
+                    // space; the raw source shows on the caret's line for editing.
+                    Repeater {
+                        model: view.livePreview ? view.imageWidgets : []
+
+                        delegate: Item {
+                            id: imageItem
+                            required property var modelData
+
+                            readonly property rect box: view.boxAt(modelData.start)
+
+                            x: box.x
+                            y: box.y
+                            width: editor.width
+                            height: pic.status === Image.Ready ? pic.height : 0
+                            visible: view.lineOf(editor.cursorPosition) !== view.lineOf(modelData.start)
+
+                            Image {
+                                id: pic
+                                source: view.imageUrl(imageItem.modelData.text)
+                                // Scale down to the sheet width; never upscale past
+                                // the image's own size.
+                                readonly property real fit: implicitWidth > editor.width && implicitWidth > 0
+                                                            ? editor.width / implicitWidth : 1
+                                width: implicitWidth * fit
+                                height: implicitHeight * fit
+                                fillMode: Image.PreserveAspectFit
+                                asynchronous: true
+                                cache: true
+
+                                onStatusChanged: {
+                                    if (status === Image.Ready)
+                                        view.reportImageHeight(imageItem.modelData.start, Math.ceil(height) + 8)
+                                    else if (status === Image.Error)
+                                        view.reportImageHeight(imageItem.modelData.start, Math.round(view.fontSize * 1.6))
+                                }
+                            }
+
+                            // A src that will not load: show it as a dim marker
+                            // rather than a blank gap.
+                            Text {
+                                visible: pic.status === Image.Error
+                                text: "⚠ " + imageItem.modelData.text
+                                color: Theme.textSoft
+                                font.family: Theme.ui
+                                font.pixelSize: Theme.px(12)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -492,5 +862,23 @@ Rectangle {
         color: Theme.textDim
         font.family: Theme.display
         font.pixelSize: Theme.px(18)
+    }
+
+    // The clipboard bridge (C++), for pasting an image.
+    ClipboardImage { id: clipboardImage }
+
+    // The third way in: pick a file. ⌘⇧I, and the picker copies the chosen image
+    // into the note's folder and links it at the caret.
+    Shortcut {
+        sequence: "Ctrl+Shift+I"
+        enabled: view.hasNote
+        onActivated: imageFileDialog.open()
+    }
+
+    FileDialog {
+        id: imageFileDialog
+        title: "Add image"
+        nameFilters: ["Images (*.png *.jpg *.jpeg *.gif *.webp *.svg *.bmp)"]
+        onAccepted: view.insertImage(NoteEditor.import_image(view.localPath(selectedFile)))
     }
 }

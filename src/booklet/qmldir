@@ -6,7 +6,6 @@ EditorView 1.0 EditorView.qml
 Marginalia 1.0 Marginalia.qml
 StarMap 1.0 StarMap.qml
 QuickSwitcher 1.0 QuickSwitcher.qml
-ShelfView 1.0 ShelfView.qml
 SettingsView 1.0 SettingsView.qml
 SettingsPane 1.0 SettingsPane.qml
 SettingSlider 1.0 SettingSlider.qml

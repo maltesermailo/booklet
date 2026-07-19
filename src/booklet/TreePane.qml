@@ -13,6 +13,38 @@ Rectangle {
     property var rows: []
     property string currentId: ""   // the open note — the active row
     property string selectedId: ""  // the last row clicked — where new things land
+    property string pulseId: ""     // a just-revealed row, briefly glowing
+
+    // Scrolls the tree to `id` and pulses its row, so clicking a breadcrumb
+    // segment shows where it lives. Deferred with callLater so it runs after the
+    // Library.reveal that expanded the ancestors has refreshed the rows.
+    function revealTo(id) {
+        pane.pendingReveal = id
+        Qt.callLater(pane.applyReveal)
+    }
+    property string pendingReveal: ""
+    function applyReveal() {
+        var id = pane.pendingReveal
+        var index = -1
+        for (var i = 0; i < pane.visibleRows.length; i++) {
+            if (pane.visibleRows[i].id === id) {
+                index = i
+                break
+            }
+        }
+        if (index < 0)
+            return
+
+        treeList.positionViewAtIndex(index, ListView.Center)
+        pane.pulseId = id
+        pulseTimer.restart()
+    }
+
+    Timer {
+        id: pulseTimer
+        interval: 850 // long enough to notice, then the row eases back
+        onTriggered: pane.pulseId = ""
+    }
 
     // Inline editing, either creating a child of `editParent` or renaming
     // `editId`. Empty `editMode` means nothing is being edited.
@@ -204,6 +236,7 @@ Rectangle {
     }
 
     ListView {
+        id: treeList
         anchors.top: iconBar.bottom
         anchors.topMargin: 6
         anchors.left: parent.left
@@ -222,6 +255,8 @@ Rectangle {
             readonly property bool renaming: pane.editMode === "rename" && modelData.id === pane.editId
             readonly property bool editing: placeholder || renaming
 
+            readonly property bool pulsing: !placeholder && modelData.id === pane.pulseId
+
             width: ListView.view ? ListView.view.width : 0
             height: Theme.row(24)
             radius: Theme.radiusSmall
@@ -229,12 +264,14 @@ Rectangle {
             // reference hardcodes rgba(255,255,255,.03) here, which is invisible
             // on vellum's paper. Deriving it from the ink darkens on a light
             // theme and lightens on a dark one, which is what the 3% meant.
-            color: modelData.id === pane.currentId && !rowItem.editing ? Theme.activePill
+            // A just-revealed row glows in brass, then eases back via the Behavior.
+            color: rowItem.pulsing ? Qt.rgba(Theme.brass.r, Theme.brass.g, Theme.brass.b, 0.45)
+                 : modelData.id === pane.currentId && !rowItem.editing ? Theme.activePill
                  : hover.hovered ? Qt.rgba(Theme.text.r, Theme.text.g, Theme.text.b, 0.03)
                  : "transparent"
 
             Behavior on color {
-                ColorAnimation { duration: Theme.quick; easing.type: Theme.easing }
+                ColorAnimation { duration: Theme.gentle; easing.type: Theme.easing }
             }
 
             HoverHandler { id: hover }

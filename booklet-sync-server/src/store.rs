@@ -1497,6 +1497,7 @@ fn kind_to_db(kind: proto::EntityKind) -> &'static str {
         proto::EntityKind::Note => "note",
         proto::EntityKind::BookMeta => "bookmeta",
         proto::EntityKind::Folder => "folder",
+        proto::EntityKind::Image => "image",
     }
 }
 
@@ -1504,6 +1505,7 @@ fn kind_from_db(kind: &str) -> proto::EntityKind {
     match kind {
         "bookmeta" => proto::EntityKind::BookMeta,
         "folder" => proto::EntityKind::Folder,
+        "image" => proto::EntityKind::Image,
         _ => proto::EntityKind::Note,
     }
 }

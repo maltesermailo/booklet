@@ -90,6 +90,32 @@ fn scenario(base: &str) {
     pull(&alice, &vault, &dir_a, &mut vault_a.manifest, &mut vault_a.state).unwrap();
     assert_eq!(read(&dir_a, "Solo (conflict 2026-07-17).md"), "B's solo\n");
 
+    // --- An image edited on both sides is binary, so it must NOT go through the
+    //     text merge (which would corrupt it). B loses the 409 with an ancestor
+    //     and adopts its own bytes last-write-wins, byte-for-byte intact. ---
+    let png_base: &[u8] = b"\x89PNG\r\n\x1a\nshared-base\x00\xff";
+    let png_a: &[u8] = b"\x89PNG\r\n\x1a\nedited-by-A\x00\xff";
+    let png_b: &[u8] = b"\x89PNG\r\n\x1a\nedited-by-B\x01\xfe";
+
+    fs::write(dir_a.join("pic.png"), png_base).unwrap();
+    push(&alice, &vault, &dir_a, &mut vault_a.manifest, &mut vault_a.state, TODAY).unwrap();
+    pull(&alice_phone, &vault, &dir_b, &mut vault_b.manifest, &mut vault_b.state).unwrap();
+    assert_eq!(fs::read(dir_b.join("pic.png")).unwrap(), png_base);
+
+    fs::write(dir_a.join("pic.png"), png_a).unwrap();
+    fs::write(dir_b.join("pic.png"), png_b).unwrap();
+    push(&alice, &vault, &dir_a, &mut vault_a.manifest, &mut vault_a.state, TODAY).unwrap();
+    let image_outcome = push(&alice_phone, &vault, &dir_b, &mut vault_b.manifest, &mut vault_b.state, TODAY).unwrap();
+
+    // No text merge, no flag, no conflict copy — just B's raw bytes, uncorrupted.
+    assert!(image_outcome.flagged.is_empty(), "an image must never be flagged for merge review");
+    assert!(image_outcome.conflict_copies.is_empty(), "an image conflict is last-write-wins, not a conflict copy");
+    assert_eq!(fs::read(dir_b.join("pic.png")).unwrap(), png_b, "B keeps its own bytes intact, not a merged file");
+
+    // A pulls and converges on B's bytes (the last write).
+    pull(&alice, &vault, &dir_a, &mut vault_a.manifest, &mut vault_a.state).unwrap();
+    assert_eq!(fs::read(dir_a.join("pic.png")).unwrap(), png_b, "both devices converge on the last-written image");
+
     // --- A subfolder (a book/section) pushes without an "is a directory" error,
     //     and the folder itself syncs to B. ---
     fs::create_dir_all(dir_a.join("Chapter")).unwrap();

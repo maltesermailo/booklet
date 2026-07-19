@@ -17,6 +17,10 @@ Popup {
     property var vaults: []
     property int selected: -1
     property string folder: ""
+    // Reactive sign-in state: `Sync.is_signed_in()` is a plain call with no change
+    // signal, so binding to it directly goes stale (it was read once, before you
+    // signed in, and never again). Kept in step via the signals below instead.
+    property bool signedIn: false
 
     // A vault was cloned and made active; Main uses this to close the picker.
     signal cloned()
@@ -25,7 +29,8 @@ Popup {
         dialog.vaults = []
         dialog.selected = -1
         dialog.folder = ""
-        if (Sync.is_signed_in())
+        dialog.signedIn = Sync.is_signed_in()
+        if (dialog.signedIn)
             Sync.request_vaults()
         dialog.open()
     }
@@ -54,6 +59,14 @@ Popup {
     Connections {
         target: Sync
         function onVaults_ready(payload) { dialog.vaults = JSON.parse(payload) }
+        // Signing in while the dialog is open (or just before it) flips the body
+        // from the "sign in first" hint to the vault list, and pulls the list.
+        function onSigned_in(ok) {
+            dialog.signedIn = ok
+            if (ok)
+                Sync.request_vaults()
+        }
+        function onStatus_changed(payload) { dialog.signedIn = JSON.parse(payload).signed_in }
     }
 
     FolderDialog {
@@ -74,7 +87,7 @@ Popup {
         }
 
         Text {
-            visible: !Sync.is_signed_in()
+            visible: !dialog.signedIn
             text: "Sign in to a server first."
             color: Theme.textSoft
             font.family: Theme.ui
@@ -84,7 +97,7 @@ Popup {
         ListView {
             width: parent.width - 44
             height: 160
-            visible: Sync.is_signed_in()
+            visible: dialog.signedIn
             clip: true
             model: dialog.vaults
             spacing: 2
@@ -121,7 +134,7 @@ Popup {
         Row {
             width: parent.width - 44
             spacing: 10
-            visible: Sync.is_signed_in()
+            visible: dialog.signedIn
 
             TextButton {
                 label: "Choose folder…"

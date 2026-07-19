@@ -12,12 +12,19 @@ Stack: **QtQuick (QML) frontend, Rust backend via Qt Bridges for Rust**
 (`qtbridge`, currently public beta).
 
 **C++ is allowed only where qtbridge cannot reach.** The backend stays Rust; the
-one sanctioned exception is a `QSyntaxHighlighter` shim for the editor's live
-preview (`src/cpp/`), because highlighting requires attaching to
-`TextEdit.textDocument` and qtbridge 0.2 exposes no text-document types at all
-(its Qt surface is `qstring`/`qvariant`/`qobject`/`qjson*`/`qlist`/`qmetatype`/
-`qguiapplication`/`qqmlapplicationengine`). Do not reach for C++ for anything
-else without asking — every other feature so far has been reachable from Rust.
+sanctioned exceptions both live in `src/cpp/` and exist for the same reason —
+they touch Qt types qtbridge 0.2 exposes no path to (its Qt surface is
+`qstring`/`qvariant`/`qobject`/`qjson*`/`qlist`/`qmetatype`/`qguiapplication`/
+`qqmlapplicationengine`). They are:
+- `markdown_highlighter` — the editor's live preview, a `QSyntaxHighlighter`
+  attached to `TextEdit.textDocument`.
+- `clipboard_image` — reads a pasted image off `QClipboard` as base64 PNG so it
+  can be saved into the note's folder. Naming/dedup/writing stay in Rust
+  (`booklet-core::image`); this only hands the bytes across.
+Both are `(header, source)` pairs listed in `build.rs`'s `CPP_CLASSES`, each
+moc'd and compiled into one static lib, and each registered from `main.rs` before
+QML loads. Do not reach for C++ for anything else without asking — every other
+feature has been reachable from Rust.
 
 ## Base features
 
@@ -132,15 +139,29 @@ else without asking — every other feature so far has been reachable from Rust.
   has no tree-model trait, so Rust owns the hierarchy and exposes only visible
   rows (each with `depth`); expand/collapse is a slot. Do not attempt a
   QAbstractItemModel from Rust.
-- `src/cpp/markdown_highlighter.{h,cpp}` — the live preview. A
-  `QSyntaxHighlighter` attached to the editing block's `TextEdit.textDocument`:
-  it dims markdown's syntax markers and styles the text as it will render, so
-  `# Test` reads as a heading while you type it. **The only C++ in the repo**,
-  because the highlighter must reach the text document and qtbridge exposes no
-  path to it. `build.rs` runs `moc` and compiles it using
-  `qtbridge-build-utils`' `QtInstallation` (which knows the macOS framework
-  layout); `main.rs` calls `booklet_register_highlighter()` to register the QML
-  type before loading QML.
+- `booklet-core::render` — the renderer's brain, Qt-free and unit-tested. Parses
+  the note with `pulldown-cmark` (`Options::all()`, CommonMark + GFM) plus a
+  hand scan for `[[wiki-links]]`, and emits a flat `Vec<Decoration>` — spans with
+  **UTF-16 offsets** (Qt's document coordinate; the byte→UTF-16 map is built here
+  where the source string is in hand). Kinds cover inline (em/strong/strike/code/
+  link/wikilink), the collapsible `marker`s, blocks (heading/blockquote/
+  code_block/list/rule/table/image/math/html/footnote_ref/task), and fenced-code
+  `code_token`s. Code tokens come from `syntect`'s **parsing** layer (scope stacks,
+  no bundled theme) folded into semantic classes the UI colours from *its* theme,
+  so highlighting follows light/dark. `NoteEditor.decorations()` serialises this
+  to JSON every keystroke.
+- `src/cpp/markdown_highlighter.{h,cpp}` — the live preview, driven by that
+  decoration JSON (not regexes). A `QSyntaxHighlighter` on the editor's
+  `TextEdit.textDocument` that, per block, merges each overlapping decoration's
+  **character** format so nested spans compose, and collapses a marker to nothing
+  off the caret's line via the `setFontStretch(1)` + transparent trick. Block
+  widgets (tables, images) are drawn by QML overlays in `EditorView.qml`; the C++
+  reserves their vertical space with `reservingFormat` — an invisible oversized
+  char whose line is as tall as the widget (converted back through the font's
+  height/pixel-size ratio) — because a char format is undo-safe where a
+  `QTextBlockFormat` edit would pollute the undo stack. One of two sanctioned C++
+  files (see the top of this doc). `build.rs` mocs and compiles both via
+  `CPP_CLASSES`; `main.rs` registers each before QML loads.
 - `booklet-core::document` — the note model: `Document::open` reads a note,
   `set_source` takes the editor's text in memory, `write` puts it on disk (kept
   apart so the caller decides when to pay for I/O), `create_note` seeds a new

@@ -475,6 +475,30 @@ pub fn breadcrumb_of(vault: &Path, note: &Path) -> Vec<String> {
     segments
 }
 
+/// The breadcrumb with each segment's absolute path, so the UI can make it
+/// clickable — each folder (book, section) and the note itself carries the id to
+/// reveal in the tree. Names match `breadcrumb_of`; the last segment is the note
+/// title paired with the note's own path.
+pub fn breadcrumb_with_paths(vault: &Path, note: &Path) -> Vec<(String, PathBuf)> {
+    let relative = note.strip_prefix(vault).unwrap_or(note);
+    let components: Vec<_> = relative.components().collect();
+
+    let mut path = vault.to_path_buf();
+    let mut out = Vec::with_capacity(components.len());
+    for (index, part) in components.iter().enumerate() {
+        path.push(part);
+        let last = index == components.len() - 1;
+        let name = if last {
+            note_title(note)
+        } else {
+            part.as_os_str().to_string_lossy().into_owned()
+        };
+        out.push((name, path.clone()));
+    }
+
+    out
+}
+
 /// The note's location as a breadcrumb: the vault name followed by the folders
 /// leading to it, e.g. "Theologie / Lektüre".
 fn context_of(vault: &Path, note: &Path) -> String {
@@ -663,5 +687,21 @@ mod tests {
         assert_eq!(books[1].note_count, 1);
 
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn breadcrumb_with_paths_pairs_each_segment_with_its_path() {
+        let vault = Path::new("/v");
+        let note = Path::new("/v/Book/Section/Note.md");
+        let crumbs = breadcrumb_with_paths(vault, note);
+
+        let names: Vec<&str> = crumbs.iter().map(|(name, _)| name.as_str()).collect();
+        assert_eq!(names, ["Book", "Section", "Note"]); // last is the title, not the file
+
+        // Each segment carries the absolute path to reveal in the tree, and the
+        // last is the note's own path.
+        assert_eq!(crumbs[0].1, PathBuf::from("/v/Book"));
+        assert_eq!(crumbs[1].1, PathBuf::from("/v/Book/Section"));
+        assert_eq!(crumbs[2].1, PathBuf::from("/v/Book/Section/Note.md"));
     }
 }

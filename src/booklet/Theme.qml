@@ -83,6 +83,13 @@ QtObject {
         readonly property color accentDeep:  "#A8842C"
         readonly property color link:        "#C4695A"  // ember
         readonly property color activePill:  "#2A2721"
+        readonly property color codeKeyword:  "#CE7B57"
+        readonly property color codeString:   "#9AAE68"
+        readonly property color codeComment:  "#6B6455"
+        readonly property color codeNumber:   "#D2A24C"
+        readonly property color codeFunction: "#77A6A0"
+        readonly property color codeType:     "#B191C0"
+        readonly property color codeConstant: "#CF9A54"
     }
 
     readonly property QtObject atlas: QtObject {
@@ -102,6 +109,13 @@ QtObject {
         readonly property color accentDeep:  "#B89A54"
         readonly property color link:        "#74BCC4"  // comet
         readonly property color activePill:  "#16202E"
+        readonly property color codeKeyword:  "#7F9CD6"
+        readonly property color codeString:   "#7FB894"
+        readonly property color codeComment:  "#55607A"
+        readonly property color codeNumber:   "#DFC078"
+        readonly property color codeFunction: "#74BCC4"
+        readonly property color codeType:     "#B49BD8"
+        readonly property color codeConstant: "#D69A6A"
     }
 
     readonly property QtObject graphite: QtObject {
@@ -121,6 +135,13 @@ QtObject {
         readonly property color accentDeep:  "#8F8F88"
         readonly property color link:        "#82A7C4"  // steel blue
         readonly property color activePill:  "#242424"
+        readonly property color codeKeyword:  "#C08A78"
+        readonly property color codeString:   "#93A886"
+        readonly property color codeComment:  "#5E5E5A"
+        readonly property color codeNumber:   "#C4B27C"
+        readonly property color codeFunction: "#8AA7B4"
+        readonly property color codeType:     "#AF9BB4"
+        readonly property color codeConstant: "#BE9A76"
     }
 
     readonly property QtObject vellum: QtObject {
@@ -140,6 +161,13 @@ QtObject {
         readonly property color accentDeep:  "#6F571F"
         readonly property color link:        "#8C3A2F"  // oxblood
         readonly property color activePill:  "#DCD2BB"
+        readonly property color codeKeyword:  "#9A4420"
+        readonly property color codeString:   "#5A6E2E"
+        readonly property color codeComment:  "#9C8F76"
+        readonly property color codeNumber:   "#8A5A1E"
+        readonly property color codeFunction: "#2E6A6A"
+        readonly property color codeType:     "#6A4A8A"
+        readonly property color codeConstant: "#8A5A28"
     }
 
     readonly property QtObject p: mode === "atlas" ? atlas
@@ -163,6 +191,15 @@ QtObject {
     readonly property color brassDeep:   p.accentDeep  // existing components need
     readonly property color ember:       p.link        // no changes
     readonly property color activePill:  p.activePill
+
+    // Fenced-code syntax colours, one per semantic token class from render.rs.
+    readonly property color codeKeyword:  p.codeKeyword
+    readonly property color codeString:   p.codeString
+    readonly property color codeComment:  p.codeComment
+    readonly property color codeNumber:   p.codeNumber
+    readonly property color codeFunction: p.codeFunction
+    readonly property color codeType:     p.codeType
+    readonly property color codeConstant: p.codeConstant
 
     // Binding colors are per-book data (booklet.json), not theme.
     readonly property var bindings: ["#7C3128", "#2F3E5C", "#3C5240",

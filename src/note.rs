@@ -6,6 +6,7 @@
 //! highlighter (src/cpp/) styles it live — so nothing here renders markdown or
 //! deals in blocks.
 
+use base64::Engine;
 use booklet_core::document::{self, Document};
 use booklet_core::{config, links, tags, vault};
 use qtbridge::qobject;
@@ -100,15 +101,23 @@ impl NoteEditor {
     }
 
     /// The open note's place in its vault as breadcrumb segments (book, any
-    /// sections, then the note), for the topbar.
+    /// sections, then the note), each with the id to reveal in the tree, for the
+    /// topbar's clickable path.
     #[qslot]
     fn breadcrumb(&self) -> String {
         let segments = match (self.document.as_ref(), self.current_vault()) {
-            (Some(document), Some(vault)) => vault::breadcrumb_of(vault, document.path()),
+            (Some(document), Some(vault)) => vault::breadcrumb_with_paths(vault, document.path()),
             _ => Vec::new(),
         };
 
-        serde_json::to_string(&segments).expect("breadcrumb serializes to JSON")
+        let rows: Vec<serde_json::Value> = segments
+            .into_iter()
+            .map(|(name, path)| {
+                serde_json::json!({ "name": name, "id": path.to_string_lossy().into_owned() })
+            })
+            .collect();
+
+        serde_json::to_string(&rows).expect("breadcrumb serializes to JSON")
     }
 
     /// The line above the note: which section it sits in, and when it was last
@@ -189,6 +198,57 @@ impl NoteEditor {
     fn decorations(&self) -> String {
         let source = self.document.as_ref().map(|document| document.source()).unwrap_or("");
         serde_json::to_string(&booklet_core::render::decorations(source)).expect("decorations serialize to JSON")
+    }
+
+    /// Copies an image file into the open note's folder and returns the file name
+    /// to write into the `![](…)` link (empty on failure). Backs drag-and-drop and
+    /// the file picker; the image lives beside the note so the vault stays portable.
+    #[qslot]
+    fn import_image(&mut self, source: String) -> String {
+        let folder = match self.current_folder() {
+            Some(folder) => folder.to_path_buf(),
+            None => {
+                self.failed("Open a note before adding an image.".into());
+                return String::new();
+            }
+        };
+
+        match booklet_core::image::import_file(&folder, Path::new(&source)) {
+            Ok(name) => name,
+            Err(error) => {
+                self.failed(format!("Could not add image: {error}"));
+                String::new()
+            }
+        }
+    }
+
+    /// Saves a pasted image (base64-encoded PNG, from the C++ clipboard bridge)
+    /// into the open note's folder and returns its file name (empty on failure).
+    #[qslot]
+    fn save_pasted_image(&mut self, png_base64: String) -> String {
+        let folder = match self.current_folder() {
+            Some(folder) => folder.to_path_buf(),
+            None => {
+                self.failed("Open a note before adding an image.".into());
+                return String::new();
+            }
+        };
+
+        let bytes = match base64::engine::general_purpose::STANDARD.decode(png_base64.trim()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.failed(format!("Could not read pasted image: {error}"));
+                return String::new();
+            }
+        };
+
+        match booklet_core::image::save_bytes(&folder, &bytes, "png") {
+            Ok(name) => name,
+            Err(error) => {
+                self.failed(format!("Could not add image: {error}"));
+                String::new()
+            }
+        }
     }
 
     /// Takes the editor's text, without writing. Cheap enough to call on every

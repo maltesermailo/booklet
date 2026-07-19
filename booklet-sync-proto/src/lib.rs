@@ -12,16 +12,18 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Which kind of tracked entity a change concerns. The same three variants as
+/// Which kind of tracked entity a change concerns. The same variants as
 /// `booklet_core::sync::EntryKind`, duplicated on purpose: the two crates must
 /// not depend on each other, and the client converts across the seam in one
-/// `match`. Serializes lowercase (`"note"` / `"bookmeta"` / `"folder"`).
+/// `match`. Serializes lowercase (`"note"` / `"bookmeta"` / `"folder"` /
+/// `"image"`).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum EntityKind {
     Note,
     BookMeta,
     Folder,
+    Image,
 }
 
 // --- auth ---
@@ -159,9 +161,14 @@ mod tests {
     #[test]
     fn entity_kind_serializes_lowercase() {
         assert_eq!(serde_json::to_string(&EntityKind::BookMeta).unwrap(), "\"bookmeta\"");
+        assert_eq!(serde_json::to_string(&EntityKind::Image).unwrap(), "\"image\"");
         assert_eq!(
             serde_json::from_str::<EntityKind>("\"folder\"").unwrap(),
             EntityKind::Folder
+        );
+        assert_eq!(
+            serde_json::from_str::<EntityKind>("\"image\"").unwrap(),
+            EntityKind::Image
         );
     }
 

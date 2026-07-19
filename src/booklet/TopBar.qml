@@ -22,7 +22,8 @@ Rectangle {
     signal showMarginalia()
     signal openSettings()
     signal openPicker()
-    signal openShelf()
+    // A breadcrumb segment was clicked: reveal that book/section/note in the tree.
+    signal revealRequested(string id)
 
     property bool canGoBack: false
     property bool canGoForward: false
@@ -46,11 +47,6 @@ Rectangle {
     readonly property string marginaliaIcon: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M15 4v16"
     // A gear: the ring, plus eight teeth spoked around it.
     readonly property string settingsIcon: "M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7z M12 2.6v2.6 M12 18.8v2.6 M5.4 5.4l1.9 1.9 M16.7 16.7l1.9 1.9 M2.6 12h2.6 M18.8 12h2.6 M5.4 18.6l1.9-1.9 M16.7 7.3l1.9-1.9"
-    // Books on a shelf, the last one leaning. Spines are lines rather than
-    // outlines: a spine wide enough to outline is ~2.5px once the 24 grid is
-    // drawn at 15, and its own 1.8 stroke would fill that in solid. The lean is
-    // what keeps three upright lines from reading as a bar chart.
-    readonly property string shelfIcon: "M6 20V6 M10.5 20V4 M15 20l4-13"
 
     function reload() {
         bar.vaults = JSON.parse(Library.vaults())
@@ -179,19 +175,9 @@ Rectangle {
             }
         }
 
-        // Beside the vault menu on purpose: switching vaults and browsing the
-        // books inside one are the same errand a level apart, and until now the
-        // second had no button at all — only ⌘L, which you had to be told about.
-        // Opens only; the shelf is full-window, so this bar is gone while it is
-        // up and Esc is the way back.
-        IconButton {
-            anchors.verticalCenter: parent.verticalCenter
-            path: bar.shelfIcon
-            tip: "Shelf — every book in this vault (⌘L)"
-            onClicked: bar.openShelf()
-        }
-
-        // Breadcrumb: book / sections / note, the last segment bright.
+        // Breadcrumb: book / sections / note, the last segment bright. Each
+        // segment is clickable — it reveals that book, section or note in the
+        // tree (the shelf's job, now that the path itself does it).
         Row {
             anchors.verticalCenter: parent.verticalCenter
             spacing: 0
@@ -209,14 +195,25 @@ Rectangle {
                         color: Theme.textDim
                         font.family: Theme.ui
                         font.pixelSize: Theme.px(13)
+                        anchors.verticalCenter: parent.verticalCenter
                     }
                     Text {
+                        id: crumb
                         readonly property bool last: index === bar.crumbs.length - 1
-                        text: modelData
-                        color: last ? Theme.textBright : Theme.textSoft
+                        text: modelData.name
+                        color: crumbHover.hovered ? Theme.brass
+                             : last ? Theme.textBright : Theme.textSoft
                         font.family: Theme.ui
                         font.pixelSize: Theme.px(13)
                         font.weight: last ? Font.Medium : Font.Normal
+                        anchors.verticalCenter: parent.verticalCenter
+
+                        Behavior on color {
+                            ColorAnimation { duration: Theme.quick; easing.type: Theme.easing }
+                        }
+
+                        HoverHandler { id: crumbHover; cursorShape: Qt.PointingHandCursor }
+                        TapHandler { onTapped: bar.revealRequested(modelData.id) }
                     }
                 }
             }

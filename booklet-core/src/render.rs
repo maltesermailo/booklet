@@ -12,6 +12,8 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::Serialize;
 use std::ops::Range;
+use std::sync::OnceLock;
+use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 
 /// One styled span. `kind` names it; the optional fields carry its attributes.
 /// All fields are always serialized so the C++ side can read a stable shape.
@@ -45,6 +47,9 @@ pub fn decorations(source: &str) -> Vec<Decoration> {
     let mut stack: Vec<Span> = Vec::new();
     // Byte ranges of code (span + block), so the wiki-link scan ignores `[[` there.
     let mut code_ranges: Vec<Range<usize>> = Vec::new();
+    // Where the current table began; pulldown's `Start(Table)` range covers only
+    // the header row, so the full span is bracketed from `Start` to `End`.
+    let mut table_start: Option<usize> = None;
 
     let parser = Parser::new_ext(source, Options::all()).into_offset_iter();
     for (event, range) in parser {
@@ -111,10 +116,13 @@ pub fn decorations(source: &str) -> Vec<Decoration> {
             Event::Start(Tag::CodeBlock(kind)) => {
                 code_ranges.push(range.clone());
                 let mut deco = span_deco("code_block", &map, range.start, range.end);
-                if let pulldown_cmark::CodeBlockKind::Fenced(lang) = kind {
-                    deco.text = lang.into_string();
-                }
+                let lang = match kind {
+                    pulldown_cmark::CodeBlockKind::Fenced(lang) => lang.into_string(),
+                    pulldown_cmark::CodeBlockKind::Indented => String::new(),
+                };
+                deco.text = lang.clone();
                 out.push(deco);
+                emit_code_tokens(&mut out, &map, source, range, &lang);
             }
             Event::Start(Tag::Item) => {
                 let ordered = source[range.clone()].trim_start().starts_with(|c: char| c.is_ascii_digit());
@@ -123,7 +131,12 @@ pub fn decorations(source: &str) -> Vec<Decoration> {
                 out.push(deco);
                 emit_list_marker(&mut out, &map, source, range);
             }
-            Event::Start(Tag::Table(_)) => out.push(span_deco("table", &map, range.start, range.end)),
+            Event::Start(Tag::Table(_)) => table_start = Some(range.start),
+            Event::End(TagEnd::Table) => {
+                if let Some(start) = table_start.take() {
+                    out.push(span_deco("table", &map, start, range.end));
+                }
+            }
             _ => {}
         }
     }
@@ -305,6 +318,104 @@ fn push_simple(out: &mut Vec<Decoration>, map: &Utf16Map, kind: &'static str, ra
     out.push(span_deco(kind, map, range.start, range.end));
 }
 
+/// The bundled syntax definitions, loaded once (the parse is ~tens of ms).
+fn syntax_set() -> &'static SyntaxSet {
+    static SYNTAXES: OnceLock<SyntaxSet> = OnceLock::new();
+    SYNTAXES.get_or_init(SyntaxSet::load_defaults_newlines)
+}
+
+/// Highlights a fenced code block's body: syntect classifies each token by its
+/// TextMate scope, which we fold into a handful of semantic classes the UI colours
+/// from its own theme (so highlighting follows the app's light/dark themes rather
+/// than a bundled syntect theme). Emits `code_token` decorations carrying the class
+/// name in `text`. Unknown languages and indented blocks get no tokens (they stay
+/// plain monospace).
+fn emit_code_tokens(out: &mut Vec<Decoration>, map: &Utf16Map, source: &str, range: Range<usize>, lang: &str) {
+    if lang.is_empty() {
+        return;
+    }
+    let syntaxes = syntax_set();
+    let Some(syntax) = syntaxes.find_syntax_by_token(lang) else {
+        return;
+    };
+
+    let mut state = ParseState::new(syntax);
+    let mut stack = ScopeStack::new();
+    let mut byte = range.start;
+    let mut lines = source[range.clone()].split_inclusive('\n');
+
+    // The opening fence line (```lang) carries no code.
+    if let Some(fence) = lines.next() {
+        byte += fence.len();
+    }
+
+    for line in lines {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            break; // the closing fence
+        }
+
+        let ops = state.parse_line(line, syntaxes).unwrap_or_default();
+        let mut idx = 0;
+        for (offset, op) in ops {
+            emit_token(out, map, &stack, byte + idx, byte + offset);
+            let _ = stack.apply(&op);
+            idx = offset;
+        }
+        emit_token(out, map, &stack, byte + idx, byte + line.len());
+
+        byte += line.len();
+    }
+}
+
+/// Emits one `code_token` decoration for `[start, end)` if the current scope maps
+/// to a semantic class; a no-op for plain text or an empty range.
+fn emit_token(out: &mut Vec<Decoration>, map: &Utf16Map, stack: &ScopeStack, start: usize, end: usize) {
+    if end <= start {
+        return;
+    }
+    if let Some(class) = classify(stack) {
+        let mut deco = span_deco("code_token", map, start, end);
+        deco.text = class.to_string();
+        out.push(deco);
+    }
+}
+
+/// Folds a TextMate scope stack into one of the semantic classes the UI colours.
+/// The innermost (last-pushed) scope wins, matched by scope prefix.
+fn classify(stack: &ScopeStack) -> Option<&'static str> {
+    // (scope prefix, class). Order matters only within one scope: the first
+    // matching prefix wins, so more specific prefixes come first.
+    const RULES: &[(&str, &str)] = &[
+        ("comment", "comment"),
+        ("string", "string"),
+        ("constant.numeric", "number"),
+        ("constant.character", "string"),
+        ("keyword", "keyword"),
+        ("storage.type", "type"),
+        ("storage.modifier", "keyword"),
+        ("storage", "keyword"),
+        ("entity.name.function", "function"),
+        ("support.function", "function"),
+        ("variable.function", "function"),
+        ("entity.name.type", "type"),
+        ("entity.name.class", "type"),
+        ("entity.name.namespace", "type"),
+        ("support.type", "type"),
+        ("support.class", "type"),
+        ("constant", "constant"),
+    ];
+
+    for scope in stack.as_slice().iter().rev() {
+        for (prefix, class) in RULES {
+            if Scope::new(prefix).is_ok_and(|target| target.is_prefix_of(*scope)) {
+                return Some(class);
+            }
+        }
+    }
+    None
+}
+
 /// A decoration over a byte range, converted to UTF-16.
 fn span_deco(kind: &'static str, map: &Utf16Map, byte_start: usize, byte_end: usize) -> Decoration {
     let start = map.at(byte_start);
@@ -426,4 +537,53 @@ mod tests {
         assert_eq!(code[0].text, "rust");
         assert_eq!(find(&decos, "list_item").len(), 1);
     }
+
+    #[test]
+    fn table_spans_every_row_not_just_the_header() {
+        // pulldown's Start(Table) range is only the header row; the deco must
+        // bracket Start..End so the widget knows the table's full extent.
+        let src = "x\n\n| A | B |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n";
+        let decos = decorations(src);
+        let table = find(&decos, "table");
+        assert_eq!(table.len(), 1);
+        // The covered text runs from the header through the last data row.
+        let chars: Vec<char> = src.chars().collect();
+        let covered: String = chars[table[0].start..table[0].start + table[0].len].iter().collect();
+        assert!(covered.starts_with("| A | B |"));
+        assert!(covered.contains("| 3 | 4 |"));
+    }
+
+    #[test]
+    fn fenced_code_emits_semantic_tokens() {
+        let decos = decorations("```rust\nfn main() { let x = 42; }\n```\n");
+        let classes: Vec<&str> = find(&decos, "code_token").iter().map(|d| d.text.as_str()).collect();
+        // The language keyword, the numeric literal, and the function name should
+        // each be classified.
+        assert!(classes.contains(&"keyword"), "got: {classes:?}"); // fn / let
+        assert!(classes.contains(&"number"), "got: {classes:?}"); // 42
+    }
+
+    #[test]
+    fn unknown_language_and_indented_get_no_tokens() {
+        assert_eq!(find(&decorations("```wingdingscript\nzzz\n```\n"), "code_token").len(), 0);
+        assert_eq!(find(&decorations("    indented code\n"), "code_token").len(), 0);
+    }
+
+    #[test]
+    fn reference_style_links_are_covered_by_the_parser() {
+        // Reference links resolve to the same Link event as inline ones, so they
+        // need no special handling — pulldown gives us a link deco with the href.
+        let decos = decorations("See [the docs][ref].\n\n[ref]: https://example.com\n");
+        let links = find(&decos, "link");
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].text, "https://example.com");
+    }
+
+    #[test]
+    fn footnote_reference_and_math_are_emitted() {
+        let decos = decorations("A claim.[^1] And $x^2$ inline.\n\n[^1]: note\n");
+        assert_eq!(find(&decos, "footnote_ref").len(), 1);
+        assert_eq!(find(&decos, "math").len(), 1);
+    }
 }
+

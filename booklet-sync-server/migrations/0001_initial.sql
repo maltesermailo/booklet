@@ -47,7 +47,7 @@ CREATE TABLE blobs (
 CREATE TABLE entities (
   vault_id   UUID NOT NULL REFERENCES vaults(id),
   path       TEXT NOT NULL,
-  kind       TEXT NOT NULL,                       -- 'note' | 'bookmeta' | 'folder'
+  kind       TEXT NOT NULL,                       -- 'note' | 'bookmeta' | 'folder' | 'image'
   version    BIGINT NOT NULL,
   seq        BIGINT NOT NULL,
   blob       TEXT REFERENCES blobs(hash),         -- content hash; NULL for folders and deletes

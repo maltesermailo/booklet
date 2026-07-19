@@ -13,10 +13,15 @@ use std::process::Command;
 const QML_DIR: &str = "src/booklet";
 const FONTS_QRC: &str = "src/booklet/fonts.qrc";
 const FONTS_DIR: &str = "src/booklet/fonts";
-const HIGHLIGHTER_HEADER: &str = "src/cpp/markdown_highlighter.h";
-const HIGHLIGHTER_SOURCE: &str = "src/cpp/markdown_highlighter.cpp";
+/// The sanctioned C++ pieces (see CLAUDE.md), each a `(header, source)` compiled
+/// with moc: the live-preview highlighter, and the clipboard-image bridge that a
+/// paste needs (QClipboard is not reachable from qtbridge).
+const CPP_CLASSES: [(&str, &str); 2] = [
+    ("src/cpp/markdown_highlighter.h", "src/cpp/markdown_highlighter.cpp"),
+    ("src/cpp/clipboard_image.h", "src/cpp/clipboard_image.cpp"),
+];
 
-/// The Qt modules the highlighter includes and links against.
+/// The Qt modules the C++ includes and links against.
 const QT_MODULES: [&str; 4] = ["Core", "Gui", "Qml", "Quick"];
 
 fn main() {
@@ -25,7 +30,7 @@ fn main() {
 
     watch_qml();
     compile_fonts(&out_dir);
-    compile_highlighter(&qt, &out_dir);
+    compile_cpp(&qt, &out_dir);
 }
 
 /// `include_bytes_qml!` reads the QML at macro-expansion time and expands it to
@@ -66,22 +71,31 @@ fn compile_fonts(out_dir: &Path) {
     assert!(status.success(), "{} failed on {FONTS_QRC}", rcc.display());
 }
 
-/// The markdown highlighter is the one sanctioned piece of C++ (see CLAUDE.md):
-/// it must attach to `TextEdit.textDocument`, which qtbridge does not expose.
-fn compile_highlighter(qt: &QtInstallation, out_dir: &Path) {
-    println!("cargo:rerun-if-changed={HIGHLIGHTER_SOURCE}");
-
-    // moc turns the Q_OBJECT macro into the meta-object C++ that Qt needs.
-    let moc_out = out_dir.join("moc_markdown_highlighter.cpp");
-    qt.run_moc(Path::new(HIGHLIGHTER_HEADER), &moc_out);
-
+/// Compiles the sanctioned C++ (see CLAUDE.md): pieces that must reach Qt types
+/// qtbridge does not expose — the highlighter (`TextEdit.textDocument`) and the
+/// clipboard-image bridge (`QClipboard`). Each header is run through moc and
+/// compiled with its source into one static lib.
+fn compile_cpp(qt: &QtInstallation, out_dir: &Path) {
     let mut build = cc::Build::new();
-    build.cpp(true).std("c++17").file(HIGHLIGHTER_SOURCE).file(&moc_out);
+    build.cpp(true).std("c++17");
+
+    for (header, source) in CPP_CLASSES {
+        println!("cargo:rerun-if-changed={source}");
+        println!("cargo:rerun-if-changed={header}");
+
+        // moc turns the Q_OBJECT macro into the meta-object C++ that Qt needs.
+        let stem = Path::new(header).file_stem().expect("header has a stem");
+        let moc_out = out_dir.join(format!("moc_{}.cpp", stem.to_string_lossy()));
+        qt.run_moc(Path::new(header), &moc_out);
+
+        build.file(source).file(&moc_out);
+    }
+
     for dir in qt.include_dirs(QT_MODULES, false) {
         build.include(dir);
     }
     qt.configure_builder(&mut build);
-    build.compile("booklet_highlighter");
+    build.compile("booklet_cpp");
 
     qt.link_modules(QT_MODULES);
 }

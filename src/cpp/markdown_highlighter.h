@@ -6,6 +6,7 @@
 #pragma once
 
 #include <QColor>
+#include <QHash>
 #include <QQuickTextDocument>
 #include <QString>
 #include <QSyntaxHighlighter>
@@ -34,12 +35,31 @@ class MarkdownHighlighter : public QSyntaxHighlighter
     Q_PROPERTY(QColor unresolvedColor MEMBER m_unresolvedColor NOTIFY styleChanged)
     // Fill behind code blocks and blockquotes (the `--code-bg` / `--edit-bg` token).
     Q_PROPERTY(QColor codeBackground MEMBER m_codeBackground NOTIFY styleChanged)
+    // Syntax-highlighting colours for fenced code, one per semantic token class
+    // (from render.rs). Kept as theme properties so highlighting follows the app's
+    // light/dark themes rather than a bundled syntect theme.
+    Q_PROPERTY(QColor codeKeyword MEMBER m_codeKeyword NOTIFY styleChanged)
+    Q_PROPERTY(QColor codeString MEMBER m_codeString NOTIFY styleChanged)
+    Q_PROPERTY(QColor codeComment MEMBER m_codeComment NOTIFY styleChanged)
+    Q_PROPERTY(QColor codeNumber MEMBER m_codeNumber NOTIFY styleChanged)
+    Q_PROPERTY(QColor codeFunction MEMBER m_codeFunction NOTIFY styleChanged)
+    Q_PROPERTY(QColor codeType MEMBER m_codeType NOTIFY styleChanged)
+    Q_PROPERTY(QColor codeConstant MEMBER m_codeConstant NOTIFY styleChanged)
+    // Pixel height of one rendered table row. The QML grid overlay draws each row
+    // this tall; the highlighter reserves the matching height in the document so
+    // the grid has room and the text below it flows clear.
+    Q_PROPERTY(int tableRowHeight MEMBER m_tableRowHeight NOTIFY styleChanged)
     Q_PROPERTY(QString headingFamily MEMBER m_headingFamily NOTIFY styleChanged)
     Q_PROPERTY(int headingPixelSize MEMBER m_headingPixelSize NOTIFY styleChanged)
     // The decoration list (JSON) from `NoteEditor.decorations()` — parsed
     // CommonMark+GFM spans this styles. Write-only: the editor pushes it after
     // each keystroke's `set_source`.
     Q_PROPERTY(QString decorations WRITE setDecorations)
+    // Measured render height per inline image, keyed by the image's document
+    // offset (JSON object {"<offset>": <px>}). The QML overlay writes it once each
+    // image loads and knows its size; the highlighter reserves that height on the
+    // image's line so the text below flows clear of the drawn picture. Write-only.
+    Q_PROPERTY(QString imageHeights WRITE setImageHeights)
 
 public:
     explicit MarkdownHighlighter(QObject *parent = nullptr);
@@ -54,6 +74,7 @@ public:
     void setKnownTitles(const QStringList &titles);
 
     void setDecorations(const QString &json);
+    void setImageHeights(const QString &json);
 
 Q_SIGNALS:
     void documentChanged();
@@ -82,12 +103,25 @@ private:
     // `base` carries the face the marker should take if it is shown.
     QTextCharFormat markerFormat(const QTextCharFormat &base, bool onCursorLine) const;
     int blockNumberAt(int position) const;
+    // Rows the grid draws for a table (its lines minus the `|---|` separator) —
+    // what the reserved height is a multiple of.
+    int renderedRowCount(int start, int end) const;
+    // The colour for a fenced-code semantic token class ("keyword", "string", …).
+    QColor tokenColor(const QString &klass) const;
+    // A transparent, zero-width character format whose line reserves `lineHeight`
+    // px — how a table/image block widget makes room for what the QML overlay
+    // draws. A font's line advances taller than its pixel size, so the target is
+    // converted back through that ratio.
+    QTextCharFormat reservingFormat(int lineHeight) const;
 
     QVector<Deco> m_decos;
     // The JSON last applied, so an unchanged push is a no-op — which also breaks
     // the rehighlight → text-change → re-push cycle (a format pass never changes
     // the source, so the re-pushed JSON is identical and stops here).
     QString m_decorationsJson;
+    // Image offset → measured render height (see the imageHeights property).
+    QHash<int, int> m_imageHeights;
+    QString m_imageHeightsJson;
 
     QQuickTextDocument *m_document = nullptr;
     int m_cursorPosition = -1;
@@ -98,8 +132,16 @@ private:
     QColor m_linkColor;
     QColor m_unresolvedColor;
     QColor m_codeBackground;
+    QColor m_codeKeyword;
+    QColor m_codeString;
+    QColor m_codeComment;
+    QColor m_codeNumber;
+    QColor m_codeFunction;
+    QColor m_codeType;
+    QColor m_codeConstant;
     QString m_headingFamily;
     int m_headingPixelSize = 24;
+    int m_tableRowHeight = 40;
 };
 
 // Called from Rust before the QML engine loads.

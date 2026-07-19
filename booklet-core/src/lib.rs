@@ -9,6 +9,7 @@
 pub mod config;
 pub mod document;
 pub mod engine;
+pub mod image;
 pub mod links;
 pub mod merge;
 pub mod render;

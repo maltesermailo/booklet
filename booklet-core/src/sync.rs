@@ -40,6 +40,7 @@ pub enum EntryKind {
     Note,
     BookMeta,
     Folder,
+    Image,
 }
 
 /// One tracked entity's remembered state. `size` and `mtime_ns` are the gate
@@ -235,6 +236,8 @@ fn file_kind(path: &Path) -> Option<EntryKind> {
         Some(EntryKind::Note)
     } else if path.file_name() == Some(OsStr::new(BOOK_METADATA_FILE)) {
         Some(EntryKind::BookMeta)
+    } else if crate::image::is_image(path) {
+        Some(EntryKind::Image)
     } else {
         None
     }
