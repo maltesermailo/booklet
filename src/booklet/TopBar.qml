@@ -13,6 +13,10 @@ Rectangle {
     property var vaults: []
     property string activeName: ""
     property var crumbs: []
+    // The open note's id, tracked reactively: `NoteEditor.current_id()` is a plain
+    // call with no change signal, so binding menu items to it directly leaves them
+    // frozen at whatever was open when the menu was built (nothing, at startup).
+    property string currentId: ""
 
     // A hidden panel takes its own toolbar with it, so the only way back has to
     // live out here.
@@ -36,7 +40,7 @@ Rectangle {
     property bool signedIn: false
     property bool published: false
     signal signInRequested()
-    signal deleteVaultRequested(string name)
+    signal deleteVaultRequested(string name, string id)
     signal openHistory()
 
     readonly property string backIcon: "M15 5l-7 7 7 7"
@@ -83,7 +87,10 @@ Rectangle {
     }
     Connections {
         target: NoteEditor
-        function onNote_opened(id, title) { bar.crumbs = JSON.parse(NoteEditor.breadcrumb()) }
+        function onNote_opened(id, title) {
+            bar.currentId = id
+            bar.crumbs = JSON.parse(NoteEditor.breadcrumb())
+        }
     }
 
     Rectangle {
@@ -344,7 +351,7 @@ Rectangle {
         }
         AppMenuItem {
             text: "Version history"
-            enabled: NoteEditor.current_id() !== ""
+            enabled: bar.currentId !== ""
             onTriggered: bar.openHistory()
         }
         MenuSeparator {
@@ -368,7 +375,7 @@ Rectangle {
             text: "Delete server vault…"
             visible: bar.published
             height: visible ? implicitHeight : 0
-            onTriggered: bar.deleteVaultRequested(bar.activeName)
+            onTriggered: bar.deleteVaultRequested(bar.activeName, "") // "" = the active vault
         }
         MenuSeparator {
             contentItem: Rectangle { implicitHeight: 1; color: Theme.pageLine }

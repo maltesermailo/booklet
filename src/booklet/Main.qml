@@ -235,7 +235,7 @@ ApplicationWindow {
                 treePane.revealTo(id)
             }
             onSignInRequested: signInDialog.open()
-            onDeleteVaultRequested: (name) => { deleteVaultDialog.vaultName = name; deleteVaultDialog.open() }
+            onDeleteVaultRequested: (name, id) => { deleteVaultDialog.vaultName = name; deleteVaultDialog.vaultId = id; deleteVaultDialog.open() }
             onOpenHistory: if (NoteEditor.current_id() !== "") versionHistory.openFor(NoteEditor.current_id())
         }
 
@@ -336,7 +336,7 @@ ApplicationWindow {
         id: settingsView
         onSignInRequested: signInDialog.open()
         onCloneRequested: cloneDialog.openClone()
-        onDeleteVaultRequested: (name) => { deleteVaultDialog.vaultName = name; deleteVaultDialog.open() }
+        onDeleteVaultRequested: (name, id) => { deleteVaultDialog.vaultName = name; deleteVaultDialog.vaultId = id; deleteVaultDialog.open() }
     }
 
     CloneDialog {

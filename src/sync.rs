@@ -92,6 +92,13 @@ impl Sync {
         self.send(Command::DeleteVault);
     }
 
+    /// Deletes any of the user's server vaults by id — for the server-vault list in
+    /// Settings, where a vault need not be the one open (or cloned) locally.
+    #[qslot]
+    fn delete_vault_by_id(&mut self, vault_id: String) {
+        self.send(Command::DeleteVaultById(vault_id));
+    }
+
     /// `{ vault_id, path }` — clones a server vault into the empty local folder.
     #[qslot]
     fn clone_vault(&mut self, payload: String) {
@@ -243,6 +250,7 @@ enum Command {
     Sync,
     Publish(String),
     DeleteVault,
+    DeleteVaultById(String),
     Clone { vault_id: String, root: PathBuf },
     RequestVaults,
     RequestHistory(String),
@@ -321,6 +329,7 @@ impl Worker {
                 Command::Sync => self.sync(),
                 Command::Publish(name) => self.publish(&name),
                 Command::DeleteVault => self.delete_server_vault(),
+                Command::DeleteVaultById(id) => self.delete_server_vault_by_id(id),
                 Command::Clone { vault_id, root } => self.clone_vault(vault_id, root),
                 Command::RequestVaults => self.request_vaults(),
                 Command::RequestHistory(path) => self.request_history(&path),
@@ -443,32 +452,46 @@ impl Worker {
     }
 
     fn delete_server_vault(&mut self) {
-        let Some(client) = self.client.clone() else {
-            return self.fail("Sign in before deleting.");
-        };
         let Some(vault_id) = self.vault.as_ref().and_then(|vault| vault.state.vault_id.clone()) else {
             return self.fail("This vault isn't published.");
         };
 
-        match client.delete_vault(&vault_id) {
-            Ok(()) => {
-                // Unbind locally but keep every markdown file — the local backup.
-                let vault = self.vault.as_mut().unwrap();
-                vault.state = SyncState::default();
-                vault.manifest = Manifest::default();
-                let _ = vault.state.save(&vault.root);
-                let root = vault.root.clone();
+        self.delete_server_vault_by_id(vault_id);
+    }
 
-                self.set_published(false);
-                self.set_flagged_from(&root, &[]);
-                self.set_status("offline");
-                self.commit(vec![
-                    Event::Status,
-                    Event::Notice("Vault deleted from the server. Your local files are kept.".into()),
-                ]);
-            }
-            Err(error) => self.fail(&format!("Could not delete the vault: {error}")),
+    /// Deletes a server vault by id. If it happens to be the vault open here, that
+    /// one is also unbound locally (its files kept). Either way the server-vault
+    /// list is re-fetched so the UI drops it.
+    fn delete_server_vault_by_id(&mut self, vault_id: String) {
+        let Some(client) = self.client.clone() else {
+            return self.fail("Sign in before deleting.");
+        };
+
+        if let Err(error) = client.delete_vault(&vault_id) {
+            return self.fail(&format!("Could not delete the vault: {error}"));
         }
+
+        // If we were syncing this one, unbind it but keep every markdown file.
+        let is_open = self.vault.as_ref().and_then(|vault| vault.state.vault_id.as_deref()) == Some(vault_id.as_str());
+        if is_open {
+            let vault = self.vault.as_mut().unwrap();
+            vault.state = SyncState::default();
+            vault.manifest = Manifest::default();
+            let _ = vault.state.save(&vault.root);
+            let root = vault.root.clone();
+
+            self.set_published(false);
+            self.set_flagged_from(&root, &[]);
+            self.set_status("offline");
+        }
+
+        self.commit(vec![
+            Event::Status,
+            Event::Notice("Vault deleted from the server. Your local files are kept.".into()),
+        ]);
+
+        // Refresh the list behind the Settings pane.
+        self.request_vaults();
     }
 
     fn clone_vault(&mut self, vault_id: String, root: PathBuf) {
@@ -500,7 +523,12 @@ impl Worker {
 
     fn request_history(&mut self, path: &str) {
         let Some((client, vault_id)) = self.bound_client() else { return };
-        match client.history(&vault_id, path) {
+        // The UI hands us the note's absolute path; the server keys history by the
+        // path relative to the vault root (as `dismiss_flag` and the push do).
+        let Some(root) = self.vault.as_ref().map(|vault| vault.root.clone()) else { return };
+        let path = relative(&root, path);
+
+        match client.history(&vault_id, &path) {
             Ok(history) => {
                 let json = serde_json::to_string(&history.versions).expect("history serializes to JSON");
                 self.commit(vec![Event::HistoryReady(json)]);
@@ -511,7 +539,10 @@ impl Worker {
 
     fn request_version(&mut self, path: &str, version: u64) {
         let Some((client, vault_id)) = self.bound_client() else { return };
-        match restore_content(&client, &vault_id, path, version) {
+        let Some(root) = self.vault.as_ref().map(|vault| vault.root.clone()) else { return };
+        let path = relative(&root, path);
+
+        match restore_content(&client, &vault_id, &path, version) {
             Ok(content) => {
                 let json = serde_json::json!({
                     "version": version,
@@ -527,14 +558,15 @@ impl Worker {
     fn restore(&mut self, path: &str, version: u64) {
         let Some((client, vault_id)) = self.bound_client() else { return };
         let Some(root) = self.vault.as_ref().map(|vault| vault.root.clone()) else { return };
+        let path = relative(&root, path);
 
-        let restored = restore_content(&client, &vault_id, path, version);
+        let restored = restore_content(&client, &vault_id, &path, version);
         match restored {
             Ok(content) => {
-                if let Err(error) = std::fs::write(root.join(path), content) {
+                if let Err(error) = std::fs::write(root.join(&path), content) {
                     return self.fail(&format!("Could not restore: {error}"));
                 }
-                self.commit(vec![Event::NoteChanged(absolute(&root, path))]);
+                self.commit(vec![Event::NoteChanged(absolute(&root, &path))]);
                 self.sync(); // push the restored content
             }
             Err(error) => self.report(error),

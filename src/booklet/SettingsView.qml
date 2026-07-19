@@ -36,6 +36,9 @@ Popup {
     }
 
     property var vaults: []
+    // The user's vaults on the sync server (VaultSummary: id, name, seq), for the
+    // server-vault manager in the Sync pane. Pulled whenever signed in.
+    property var serverVaults: []
     property int category: 0
     property bool signedIn: false
     property bool published: false
@@ -43,7 +46,8 @@ Popup {
     // Opening the sign-in / clone dialogs, which live in Main.
     signal signInRequested()
     signal cloneRequested()
-    signal deleteVaultRequested(string name)
+    // `id` is the server vault id, "" for the active vault.
+    signal deleteVaultRequested(string name, string id)
 
     readonly property var categories: ["Vaults", "Appearance", "Editor", "Sync", "About"]
 
@@ -59,18 +63,30 @@ Popup {
         sizeSlider.value = Library.editor_font_size()
         scaleSlider.value = Library.ui_scale()
         densitySlider.value = Library.density()
+
+        settings.serverVaults = []
+        if (settings.signedIn)
+            Sync.request_vaults() // answered by onVaults_ready
     }
 
     onOpened: reload()
 
     Connections {
         target: Sync
-        function onSigned_in(ok) { settings.signedIn = ok }
+        function onSigned_in(ok) {
+            settings.signedIn = ok
+            if (ok)
+                Sync.request_vaults()
+            else
+                settings.serverVaults = []
+        }
         function onStatus_changed(payload) {
             var status = JSON.parse(payload)
             settings.signedIn = status.signed_in
             settings.published = status.published
         }
+        // The server-vault list, and its refresh after a delete.
+        function onVaults_ready(payload) { settings.serverVaults = JSON.parse(payload) }
     }
 
     Connections {
@@ -547,7 +563,7 @@ Popup {
                         TextButton {
                             label: "Delete server vault…"
                             visible: settings.published
-                            onClicked: settings.deleteVaultRequested(settings.activeVaultName())
+                            onClicked: settings.deleteVaultRequested(settings.activeVaultName(), "")
                         }
                     }
                     Text {
@@ -558,6 +574,64 @@ Popup {
                         font.family: Theme.ui
                         font.pixelSize: Theme.px(12)
                         wrapMode: Text.Wrap
+                    }
+
+                    // Everything the signed-in user has on the server, so a vault
+                    // can be managed (deleted) whether or not it is cloned here.
+                    Text {
+                        visible: settings.signedIn
+                        text: "YOUR SERVER VAULTS"
+                        color: Theme.brass
+                        font.family: Theme.ui
+                        font.pixelSize: Theme.px(11)
+                        font.letterSpacing: 1.5 * Theme.uiScale
+                        topPadding: 6
+                    }
+
+                    Repeater {
+                        model: settings.signedIn ? settings.serverVaults : []
+
+                        delegate: Rectangle {
+                            id: serverRow
+                            required property var modelData
+
+                            width: parent.width
+                            height: Theme.row(42)
+                            color: Theme.panel
+                            border.color: Theme.pageLine
+                            border.width: 1
+                            radius: Theme.radiusCard
+
+                            Text {
+                                anchors.left: parent.left
+                                anchors.leftMargin: 14
+                                anchors.right: serverDelete.left
+                                anchors.rightMargin: 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: serverRow.modelData.name
+                                color: Theme.textBright
+                                font.family: Theme.ui
+                                font.pixelSize: Theme.px(13)
+                                elide: Text.ElideRight
+                            }
+
+                            TextButton {
+                                id: serverDelete
+                                anchors.right: parent.right
+                                anchors.rightMargin: 12
+                                anchors.verticalCenter: parent.verticalCenter
+                                label: "Delete…"
+                                onClicked: settings.deleteVaultRequested(serverRow.modelData.name, serverRow.modelData.id)
+                            }
+                        }
+                    }
+
+                    Text {
+                        visible: settings.signedIn && settings.serverVaults.length === 0
+                        text: "No vaults on the server yet — publish one above."
+                        color: Theme.textDim
+                        font.family: Theme.ui
+                        font.pixelSize: Theme.px(12)
                     }
                 }
 

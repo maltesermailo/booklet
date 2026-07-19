@@ -15,6 +15,9 @@ Popup {
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     property string vaultName: ""
+    // The server vault id to delete. Empty means "the vault open here" — the
+    // active vault, deleted through Sync.delete_vault().
+    property string vaultId: ""
 
     enter: Transition {
         ParallelAnimation {
@@ -79,7 +82,10 @@ Popup {
                     TextButton {
                         label: "Delete from server"
                         onClicked: {
-                            Sync.delete_vault()
+                            if (dialog.vaultId !== "")
+                                Sync.delete_vault_by_id(dialog.vaultId)
+                            else
+                                Sync.delete_vault()
                             dialog.close()
                         }
                     }
